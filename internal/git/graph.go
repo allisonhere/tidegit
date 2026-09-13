@@ -36,7 +36,25 @@ type GraphRow struct {
 	// Tip marks a commit that no earlier row was waiting for: the start of a
 	// branch line rather than a continuation of one.
 	Tip bool
+	// Tracks identifies the line occupying each lane, or -1 where no line
+	// does. An id is issued when a line starts and kept until it ends, so a
+	// line kept its identity across every row it passes through even as it
+	// changes lanes — which is what lets a renderer colour a branch
+	// consistently. Ids are not lane numbers: a lane reused by a later branch
+	// gets a new one.
+	Tracks []int
 }
+
+// Track returns the line identity at a lane, or -1 when the lane is empty.
+func (g GraphRow) Track(lane int) int {
+	if lane < 0 || lane >= len(g.Tracks) {
+		return -1
+	}
+	return g.Tracks[lane]
+}
+
+// noTrack marks a lane no line occupies.
+const noTrack = -1
 
 // Width reports how many lanes this row occupies.
 func (g GraphRow) Width() int { return len(g.Glyphs) }
@@ -56,6 +74,8 @@ func GraphLanes(commits []Commit) []GraphRow {
 		return nil
 	}
 	var lanes []string // per lane: the commit id that lane is waiting for
+	var tracks []int   // per lane: the identity of the line occupying it
+	nextTrack := 0
 	rows := make([]GraphRow, 0, len(commits))
 
 	// place finds the leftmost lane expecting oid, else the leftmost free lane,
@@ -63,16 +83,21 @@ func GraphLanes(commits []Commit) []GraphRow {
 	place := func(oid string) int {
 		for i, waiting := range lanes {
 			if waiting == oid {
-				return i
+				return i // an existing line continues; it keeps its identity
 			}
 		}
+		// A line starting here gets a new identity, even when it reuses the
+		// column a finished line left behind.
 		for i, waiting := range lanes {
 			if waiting == "" {
-				lanes[i] = oid
+				lanes[i], tracks[i] = oid, nextTrack
+				nextTrack++
 				return i
 			}
 		}
 		lanes = append(lanes, oid)
+		tracks = append(tracks, nextTrack)
+		nextTrack++
 		return len(lanes) - 1
 	}
 
@@ -111,20 +136,23 @@ func GraphLanes(commits []Commit) []GraphRow {
 			}
 		}
 
-		rows = append(rows, buildRow(lanes, node, joins, forks, c, tip))
+		rows = append(rows, buildRow(lanes, tracks, node, joins, forks, c, tip))
 		for i, waiting := range lanes {
 			if waiting == closedLane {
-				lanes[i] = ""
+				lanes[i], tracks[i] = "", noTrack
 			}
 		}
-		trimLanes(&lanes)
+		if len(c.Parents) == 0 {
+			tracks[node] = noTrack
+		}
+		trimLanes(&lanes, &tracks)
 	}
 	return rows
 }
 
 // buildRow draws one row: the node, every lane still passing through it, and
 // the connectors for lanes joining or leaving at this commit.
-func buildRow(lanes []string, node int, joins, forks []int, c Commit, tip bool) GraphRow {
+func buildRow(lanes []string, tracks []int, node int, joins, forks []int, c Commit, tip bool) GraphRow {
 	width := len(lanes)
 	for _, lane := range append(append([]int{node}, joins...), forks...) {
 		if lane+1 > width {
@@ -179,15 +207,27 @@ func buildRow(lanes []string, node int, joins, forks []int, c Commit, tip bool) 
 		connect(lane, false)
 	}
 	glyphs[node] = GraphNode
-	return GraphRow{Lane: node, Glyphs: glyphs, Merge: c.Merge(), Root: len(c.Parents) == 0, Tip: tip}
+
+	// Tracks are recorded before the row's closed lanes are released, so a
+	// connector that ends here is still drawn in its own line's colour.
+	rowTracks := make([]int, width)
+	for i := range rowTracks {
+		rowTracks[i] = noTrack
+		if i < len(tracks) && glyphs[i] != GraphEmpty {
+			rowTracks[i] = tracks[i]
+		}
+	}
+	return GraphRow{Lane: node, Glyphs: glyphs, Merge: c.Merge(),
+		Root: len(c.Parents) == 0, Tip: tip, Tracks: rowTracks}
 }
 
 // trimLanes drops trailing lanes that are no longer waiting for anything, so
 // the graph narrows again once a branch is fully drawn.
-func trimLanes(lanes *[]string) {
-	l := *lanes
+func trimLanes(lanes *[]string, tracks *[]int) {
+	l, t := *lanes, *tracks
 	for len(l) > 0 && l[len(l)-1] == "" {
 		l = l[:len(l)-1]
+		t = t[:len(t)-1]
 	}
-	*lanes = l
+	*lanes, *tracks = l, t
 }

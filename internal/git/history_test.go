@@ -543,3 +543,103 @@ func TestGraphLanesOctopusMerge(t *testing.T) {
 		t.Fatalf("octopus row is only %d lanes wide", merge.Width())
 	}
 }
+
+// A colourable graph needs each line to keep one identity for as long as it
+// exists, including across the rows where it changes lanes.
+func TestGraphLaneTracksAreStable(t *testing.T) {
+	r, oid := topologyFixture(t)
+	commits, err := r.History(context.Background(), HistoryOptions{All: true})
+	must(t, err)
+	rows := GraphLanes(commits)
+
+	for i, row := range rows {
+		if len(row.Tracks) != len(row.Glyphs) {
+			t.Fatalf("row %d has %d tracks for %d lanes", i, len(row.Tracks), len(row.Glyphs))
+		}
+		// Every drawn lane belongs to a line; every empty one belongs to none.
+		for lane, glyph := range row.Glyphs {
+			if glyph == GraphEmpty && row.Track(lane) != -1 {
+				t.Fatalf("row %d lane %d is empty but has track %d", i, lane, row.Track(lane))
+			}
+			if glyph != GraphEmpty && row.Track(lane) < 0 {
+				t.Fatalf("row %d lane %d is drawn but has no track", i, lane)
+			}
+		}
+		if row.Track(row.Lane) < 0 {
+			t.Fatalf("row %d node has no track", i)
+		}
+	}
+	if rows[0].Track(-1) != -1 || rows[0].Track(99) != -1 {
+		t.Fatal("an out-of-range lane reported a track")
+	}
+
+	byOID := map[string]GraphRow{}
+	for i, c := range commits {
+		byOID[c.OID] = rows[i]
+	}
+	// main runs E -> M -> B: one line through all three, so one identity.
+	trunk := byOID[oid["E"]].Track(byOID[oid["E"]].Lane)
+	if got := byOID[oid["M"]].Track(byOID[oid["M"]].Lane); got != trunk {
+		t.Fatalf("the trunk changed identity at the merge: %d then %d", trunk, got)
+	}
+	if got := byOID[oid["B"]].Track(byOID[oid["B"]].Lane); got != trunk {
+		t.Fatalf("the trunk changed identity below the merge: %d then %d", trunk, got)
+	}
+	// The merged-in branch is a different line from the trunk it joins.
+	if byOID[oid["D"]].Track(byOID[oid["D"]].Lane) == trunk {
+		t.Fatal("a merged branch shares the trunk's identity")
+	}
+	// So is the branch that never merged.
+	if byOID[oid["F"]].Track(byOID[oid["F"]].Lane) == trunk {
+		t.Fatal("a diverged branch shares the trunk's identity")
+	}
+}
+
+// A column reused by a later branch must not inherit the finished line's
+// identity, or two unrelated branches would be drawn as one.
+func TestGraphReusedLaneGetsNewTrack(t *testing.T) {
+	r := fixture(t)
+	write(t, r, "base", "base\n")
+	gitCmd(t, r.Root, "add", ".")
+	gitCmd(t, r.Root, "commit", "-m", "base")
+	for _, name := range []string{"first", "second"} {
+		gitCmd(t, r.Root, "switch", "-c", name, "main")
+		write(t, r, name, name+"\n")
+		gitCmd(t, r.Root, "add", ".")
+		gitCmd(t, r.Root, "commit", "-m", name)
+		gitCmd(t, r.Root, "switch", "main")
+		gitCmd(t, r.Root, "merge", "--no-ff", "-m", "merge "+name, name)
+	}
+	commits, err := r.History(context.Background(), HistoryOptions{})
+	must(t, err)
+	rows := GraphLanes(commits)
+
+	node := func(subject string) GraphRow {
+		for i, c := range commits {
+			if c.Subject == subject {
+				return rows[i]
+			}
+		}
+		t.Fatalf("no commit %q", subject)
+		return GraphRow{}
+	}
+	first, second := node("first"), node("second")
+	// Both branches are short-lived side lines, so they take the same column
+	// one after the other — which is exactly the case that must not merge
+	// their identities.
+	if first.Lane != second.Lane {
+		t.Skipf("the two branches took different lanes (%d, %d); nothing is reused here",
+			first.Lane, second.Lane)
+	}
+	if first.Track(first.Lane) == second.Track(second.Lane) {
+		t.Fatalf("two unrelated branches sharing lane %d were given one identity (%d)",
+			first.Lane, first.Track(first.Lane))
+	}
+	// Neither may share the trunk's identity either.
+	trunk := node("base")
+	for _, branch := range []GraphRow{first, second} {
+		if branch.Track(branch.Lane) == trunk.Track(trunk.Lane) {
+			t.Fatal("a side branch shares the trunk's identity")
+		}
+	}
+}

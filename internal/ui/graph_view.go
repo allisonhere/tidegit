@@ -35,13 +35,29 @@ func glyphSet(plain bool) graphGlyphs {
 			overflow: ">", blank: " ",
 		}
 	}
+	// Heavy lines with light arcs for the corners. The heavy stroke is what
+	// makes a lane read as a continuous line rather than a column of dots,
+	// which is what the branch colours need to be legible; the arcs keep the
+	// turns soft, matching the rounded panes around them.
+	//
+	// Unicode has no heavy arc, so a corner is lighter than the lines it joins.
+	// At a terminal's cell size that reads as a taper into the turn rather than
+	// a break, and it was worth the trade for keeping the curves.
 	return graphGlyphs{
-		vertical: "│", horizontal: "─", cross: "┼",
+		vertical: "┃", horizontal: "━", cross: "╋",
 		mergeLeft: "╰", mergeRight: "╯", forkLeft: "╭", forkRight: "╮",
-		forkTee: "┬", mergeTee: "┴",
+		forkTee: "┳", mergeTee: "┻",
 		node: "●", mergeNode: "◆", rootNode: "○", headNode: "◉",
 		overflow: "›", blank: " ",
 	}
+}
+
+// allGlyphs returns every character a graph can draw, for callers that need to
+// recognise graph cells without repeating the table.
+func (g graphGlyphs) all() string {
+	return g.vertical + g.horizontal + g.cross + g.mergeLeft + g.mergeRight +
+		g.forkLeft + g.forkRight + g.forkTee + g.mergeTee +
+		g.node + g.mergeNode + g.rootNode + g.headNode + g.overflow
 }
 
 // graphWidth is the rendered width of a graph column holding up to lanes lanes.
@@ -50,20 +66,101 @@ func graphWidth(lanes int) int {
 	return 2*min(max(lanes, 1), graphLaneLimit) + 1
 }
 
-// renderGraphRow draws one commit's lane geometry. Lines stay quiet and nodes
-// take the accent so a branch can be followed down the column. On the selected
-// row the lines brighten instead of dimming out: selection must never hide the
-// topology it is sitting on.
+// laneHues are the rotations applied to a theme's accent to build the lane
+// palette. They are uneven on purpose: evenly spaced hues put muddy neighbours
+// next to each other, and adjacent lanes are exactly where two colours have to
+// be told apart.
+var laneHues = []float64{0, 48, 152, 205, 96, 268}
+
+// laneMinContrast keeps every lane legible against whatever it is drawn on.
+const laneMinContrast = 3.0
+
+// lanePalette builds the colours a graph's lines are drawn in, derived from the
+// theme's own accent so they belong to it rather than being picked arbitrarily,
+// and corrected so each one is legible against the surface behind it.
+//
+// A theme with no hue variety of its own — an amber or green phosphor terminal —
+// gets no palette at all. Inventing colour for it would destroy the thing that
+// makes it that theme.
+func lanePalette(theme tideui.Theme, on lipgloss.Color) []lipgloss.Color {
+	if theme.UsesASCII() || monochromeTheme(theme) {
+		return nil
+	}
+	palette := make([]lipgloss.Color, 0, len(laneHues))
+	for _, shift := range laneHues {
+		palette = append(palette,
+			tideui.AccentReadableOn(tideui.ShiftHue(theme.BorderFocus, shift), on, laneMinContrast))
+	}
+	return palette
+}
+
+// monochromeTheme reports whether a theme's own colours share a single hue.
+// Error is left out of the comparison: it is red in every theme, so including
+// it would make every palette look varied.
+func monochromeTheme(theme tideui.Theme) bool {
+	var hues []float64
+	for _, c := range []lipgloss.Color{theme.Fg, theme.BorderFocus, theme.Unread, theme.Selected} {
+		h, saturation, ok := tideui.Hue(c)
+		if ok && saturation > 0.12 {
+			hues = append(hues, h)
+		}
+	}
+	if len(hues) < 2 {
+		return true
+	}
+	for _, a := range hues {
+		for _, b := range hues {
+			if hueDistance(a, b) > 40 {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// hueDistance is the shorter way round the colour wheel between two hues.
+func hueDistance(a, b float64) float64 {
+	d := a - b
+	if d < 0 {
+		d = -d
+	}
+	if d > 180 {
+		d = 360 - d
+	}
+	return d
+}
+
+// laneColor picks a line's colour by its identity, so a branch keeps one colour
+// for as long as it exists rather than taking the colour of whichever column it
+// happens to occupy.
+func laneColor(palette []lipgloss.Color, track int) (lipgloss.Color, bool) {
+	if len(palette) == 0 || track < 0 {
+		return "", false
+	}
+	return palette[track%len(palette)], true
+}
+
+// renderGraphRow draws one commit's lane geometry. Each line carries its own
+// colour so a branch can be followed down the column, and the node is the bold
+// one so the commits still lead. On the selected row the palette is rebuilt
+// against the selection background: selection must never hide the topology it
+// is sitting on.
 func renderGraphRow(r tideui.Renderer, row git.GraphRow, head, selected bool, width int, base lipgloss.Style) string {
 	g := glyphSet(r.Styles.Theme.UsesASCII())
+	surface := r.Styles.Theme.Bg
+	if selected {
+		surface = selectionSurface(r)
+	}
+	palette := lanePalette(r.Styles.Theme, surface)
+
 	lineStyle := base.Foreground(r.Styles.Theme.Dimmed)
 	nodeStyle := base.Foreground(r.Styles.Theme.BorderFocus).Bold(true)
 	if head {
 		nodeStyle = base.Foreground(r.Styles.Theme.Unread).Bold(true)
 	}
 	if selected {
-		// The selection background is close to the dimmed colour, so the row's
-		// own foreground carries the lines and the node keeps its accent shape.
+		// Without a palette the selection background sits too close to the
+		// dimmed colour, so the row's own foreground carries the lines.
 		lineStyle = base
 		nodeStyle = base.Bold(true)
 	}
@@ -71,6 +168,9 @@ func renderGraphRow(r tideui.Renderer, row git.GraphRow, head, selected bool, wi
 	shown := min(row.Width(), graphLaneLimit)
 	for lane := 0; lane < shown; lane++ {
 		glyph, style := g.blank, lineStyle
+		if c, ok := laneColor(palette, row.Track(lane)); ok {
+			style = base.Foreground(c)
+		}
 		switch row.Glyphs[lane] {
 		case git.GraphVertical:
 			glyph = g.vertical
@@ -92,6 +192,11 @@ func renderGraphRow(r tideui.Renderer, row git.GraphRow, head, selected bool, wi
 			glyph = g.mergeTee
 		case git.GraphNode:
 			style = nodeStyle
+			if c, ok := laneColor(palette, row.Track(lane)); ok && !head {
+				// HEAD keeps its own colour; every other node takes its
+				// line's, so a branch reads as one colour end to end.
+				style = base.Foreground(c).Bold(true)
+			}
 			switch {
 			case head:
 				glyph = g.headNode
@@ -105,11 +210,16 @@ func renderGraphRow(r tideui.Renderer, row git.GraphRow, head, selected bool, wi
 		}
 		b.WriteString(style.Render(glyph))
 		// The cell after a lane carries any horizontal run passing over it.
-		filler := g.blank
+		// That run belongs to the commit reaching across, so it is drawn in the
+		// node's colour rather than the colour of the lane it passes over.
+		filler, fillerStyle := g.blank, lineStyle
 		if lane+1 < shown && spans(row, lane) {
 			filler = g.horizontal
+			if c, ok := laneColor(palette, row.Track(row.Lane)); ok {
+				fillerStyle = base.Foreground(c)
+			}
 		}
-		b.WriteString(lineStyle.Render(filler))
+		b.WriteString(fillerStyle.Render(filler))
 	}
 	if row.Width() > graphLaneLimit {
 		b.WriteString(lineStyle.Render(g.overflow))
@@ -223,4 +333,13 @@ func refBadges(r tideui.Renderer, refs []git.Ref, width int) string {
 		used += w + 1
 	}
 	return strings.Join(parts, " ")
+}
+
+// selectionSurface is the background a selected row is drawn on, which lane
+// colours must be legible against.
+func selectionSurface(r tideui.Renderer) lipgloss.Color {
+	if bg, ok := r.Styles.ItemSelected.GetBackground().(lipgloss.Color); ok && bg != "" {
+		return bg
+	}
+	return r.Styles.Theme.Bg
 }

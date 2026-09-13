@@ -144,7 +144,7 @@ func (m *Model) helpPanel(r tideui.Renderer) *tideui.Overlay {
 		sections = []struct{ title, body string }{
 			{"HISTORY", "j / k  move through commits    [ Enter ]  inspect\n/  filter subjects            y  copy full hash\nn  branch from this commit"},
 			{"INSPECTOR", "Tab  reach the inspector      j / k  choose a file\nEnter  open that file's patch  Esc  back to the commit"},
-			{"GRAPH", "●  commit   ◆  merge   ○  first commit   ◉  HEAD\n@ branch   # tag   origin/… remote"},
+			{"GRAPH", "●  commit   ◆  merge   ○  first commit   ◉  HEAD\nEach branch keeps its own colour down the page.\n@ branch   # tag   origin/… remote"},
 		}
 	case screenBranches:
 		sections = []struct{ title, body string }{

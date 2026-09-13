@@ -201,6 +201,27 @@ because reusing it immediately would draw one line both ending and starting in
 a single cell. Rendering caps the drawn lanes and marks the overflow rather than
 pushing the subject off the row.
 
+Lane colour is why the model carries `Tracks`. A colour keyed to the column
+would change meaning whenever a branch moved sideways or a column was reused,
+so each line is given an identity when it starts and keeps it until it ends;
+the renderer maps that identity to a colour. The identity is topology, not
+presentation, which is why it belongs in the model — the palette does not.
+
+Lines are drawn with the heavy box-drawing set rather than the light one. The
+weight is not decoration: at the stroke width of the light set a coloured lane
+reads as a column of dots rather than a line, which defeats the point of
+colouring it. Corners stay light, because Unicode has no heavy arc and the
+curve was worth more than uniform weight — the mismatch reads as a taper into
+the turn at the size a terminal actually draws it.
+
+The palette is built from the theme's own accent by hue rotation, so it belongs
+to the theme rather than being a fixed set of colours, and every entry is run
+through the contrast correction before use. It is rebuilt against the selection
+background for a selected row, because the one thing selection must not do is
+hide the topology underneath it. A theme whose own colours share a single hue
+is detected and left alone: a green phosphor terminal that suddenly grew six
+hues would no longer be one.
+
 ## Screens, loading and responsiveness
 
 `screen.go` routes one keystroke: global gates, then whichever overlay is open,

@@ -1,6 +1,8 @@
 package ui
 
 import (
+	"fmt"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -28,21 +30,23 @@ func TestGraphRowGlyphsMatchTopology(t *testing.T) {
 	render := func(row git.GraphRow, head bool) string {
 		return ansi.Strip(renderGraphRow(r, row, head, false, graphWidth(row.Width()), base))
 	}
+	g := glyphSet(false)
 	cases := []struct {
 		name string
 		row  git.GraphRow
 		want []string
 	}{
-		{"plain commit", git.GraphRow{Lane: 0, Glyphs: []git.GraphGlyph{git.GraphNode}}, []string{"●"}},
-		{"root commit", git.GraphRow{Lane: 0, Root: true, Glyphs: []git.GraphGlyph{git.GraphNode}}, []string{"○"}},
+		{"plain commit", git.GraphRow{Lane: 0, Glyphs: []git.GraphGlyph{git.GraphNode}}, []string{g.node}},
+		{"root commit", git.GraphRow{Lane: 0, Root: true, Glyphs: []git.GraphGlyph{git.GraphNode}}, []string{g.rootNode}},
 		{"merge commit", git.GraphRow{Lane: 0, Merge: true,
-			Glyphs: []git.GraphGlyph{git.GraphNode, git.GraphForkRight}}, []string{"◆", "╮"}},
+			Glyphs: []git.GraphGlyph{git.GraphNode, git.GraphForkRight}}, []string{g.mergeNode, g.forkRight}},
 		{"lane passing through", git.GraphRow{Lane: 0,
-			Glyphs: []git.GraphGlyph{git.GraphNode, git.GraphVertical}}, []string{"●", "│"}},
+			Glyphs: []git.GraphGlyph{git.GraphNode, git.GraphVertical}}, []string{g.node, g.vertical}},
 		{"lane joining from the right", git.GraphRow{Lane: 0,
-			Glyphs: []git.GraphGlyph{git.GraphNode, git.GraphMergeRight}}, []string{"●", "╯"}},
+			Glyphs: []git.GraphGlyph{git.GraphNode, git.GraphMergeRight}}, []string{g.node, g.mergeRight}},
 		{"crossed lane", git.GraphRow{Lane: 0, Merge: true,
-			Glyphs: []git.GraphGlyph{git.GraphNode, git.GraphCross, git.GraphForkRight}}, []string{"◆", "┼", "╮"}},
+			Glyphs: []git.GraphGlyph{git.GraphNode, git.GraphCross, git.GraphForkRight}},
+			[]string{g.mergeNode, g.cross, g.forkRight}},
 	}
 	for _, tc := range cases {
 		got := render(tc.row, false)
@@ -54,8 +58,15 @@ func TestGraphRowGlyphsMatchTopology(t *testing.T) {
 	}
 	// HEAD is marked by its own glyph, not only by colour.
 	head := render(git.GraphRow{Lane: 0, Glyphs: []git.GraphGlyph{git.GraphNode}}, true)
-	if !strings.Contains(head, "◉") {
+	if !strings.Contains(head, g.headNode) {
 		t.Fatalf("HEAD node: %q", head)
+	}
+	// The four node shapes have to stay distinguishable from one another.
+	for _, pair := range [][2]string{{g.node, g.mergeNode}, {g.node, g.rootNode},
+		{g.node, g.headNode}, {g.mergeNode, g.rootNode}} {
+		if pair[0] == pair[1] {
+			t.Fatalf("two node shapes are the same glyph: %q", pair[0])
+		}
 	}
 }
 
@@ -65,7 +76,7 @@ func TestGraphRowUsesASCIIForPlainThemes(t *testing.T) {
 	row := git.GraphRow{Lane: 0, Merge: true,
 		Glyphs: []git.GraphGlyph{git.GraphNode, git.GraphForkRight}}
 	got := ansi.Strip(renderGraphRow(r, row, false, false, graphWidth(2), base))
-	if strings.ContainsAny(got, "●◆○◉│╭╮╰╯┼─") {
+	if strings.ContainsAny(got, glyphSet(false).all()) {
 		t.Fatalf("plain theme used box drawing: %q", got)
 	}
 	if !strings.Contains(got, "%") || !strings.Contains(got, "\\") {
@@ -80,7 +91,7 @@ func TestGraphStaysVisibleUnderSelection(t *testing.T) {
 	row := git.GraphRow{Lane: 0, Glyphs: []git.GraphGlyph{git.GraphNode, git.GraphVertical}}
 	selected := renderGraphRow(r, row, false, true,
 		graphWidth(2), r.Styles.ItemSelected.UnsetPadding().UnsetWidth())
-	if !strings.Contains(ansi.Strip(selected), "│") {
+	if !strings.Contains(ansi.Strip(selected), glyphSet(false).vertical) {
 		t.Fatal("selected row lost its lane line")
 	}
 	if strings.Contains(selected, colorCode(r.Styles.Theme.Dimmed)) {
@@ -120,7 +131,7 @@ func TestGraphWidthIsBoundedAndStable(t *testing.T) {
 	if w := lipgloss.Width(out); w != graphWidth(graphLaneLimit) {
 		t.Fatalf("overflowing graph rendered %d cells", w)
 	}
-	if !strings.Contains(ansi.Strip(out), "›") {
+	if !strings.Contains(ansi.Strip(out), glyphSet(false).overflow) {
 		t.Fatal("hidden lanes are not marked")
 	}
 }
@@ -238,20 +249,172 @@ func TestGraphOctopusRendersTees(t *testing.T) {
 	row := git.GraphRow{Lane: 0, Merge: true, Glyphs: []git.GraphGlyph{
 		git.GraphNode, git.GraphForkTee, git.GraphForkTee, git.GraphForkRight,
 	}}
+	g := glyphSet(false)
 	got := ansi.Strip(renderGraphRow(r, row, false, false, graphWidth(4), base))
-	if !strings.Contains(got, "┬") {
+	if !strings.Contains(got, g.forkTee) {
 		t.Fatalf("no tee drawn for an octopus merge: %q", got)
 	}
-	if strings.Count(got, "╮") != 1 {
+	if strings.Count(got, g.forkRight) != 1 {
 		t.Fatalf("expected exactly one closing corner: %q", got)
 	}
 	// The run has to be continuous from the node to the last lane.
-	if strings.Contains(got, "╮─") {
+	if strings.Contains(got, g.forkRight+g.horizontal) {
 		t.Fatalf("run continues past its closing corner: %q", got)
 	}
 	plain := ansi.Strip(renderGraphRow(testRenderer(t, tideui.VT52), row, false, false, graphWidth(4),
 		testRenderer(t, tideui.VT52).Styles.Item.UnsetPadding().UnsetWidth()))
-	if strings.ContainsAny(plain, "┬╮") {
+	if strings.ContainsAny(plain, g.forkTee+g.forkRight) {
 		t.Fatalf("plain theme used box drawing: %q", plain)
+	}
+}
+
+// laneColours turns a rendered row into the colour of each graph glyph.
+func laneColours(rendered string) []string {
+	sgr := regexp.MustCompile(`\x1b\[(?:1;)?38;2;(\d+);(\d+);(\d+)[^m]*m([^\x1b]*)`)
+	var out []string
+	for _, m := range sgr.FindAllStringSubmatch(rendered, -1) {
+		if !strings.ContainsAny(m[4], glyphSet(false).all()) {
+			continue
+		}
+		out = append(out, fmt.Sprintf("%s;%s;%s", m[1], m[2], m[3]))
+	}
+	return out
+}
+
+func TestLanePaletteIsDistinctAndReadable(t *testing.T) {
+	for _, theme := range []tideui.Theme{tideui.CatppuccinMocha, tideui.CatppuccinLatte,
+		tideui.Nord, tideui.Dracula, tideui.GruvboxLight} {
+		palette := lanePalette(theme, theme.Bg)
+		if len(palette) < 4 {
+			t.Fatalf("%s produced %d lane colours", theme.Name, len(palette))
+		}
+		seen := map[lipgloss.Color]bool{}
+		for i, c := range palette {
+			if seen[c] {
+				t.Errorf("%s lane colour %d repeats %s", theme.Name, i, c)
+			}
+			seen[c] = true
+			if r := tideui.ContrastRatio(c, theme.Bg); r < laneMinContrast {
+				t.Errorf("%s lane colour %d contrast %.2f against the page", theme.Name, i, r)
+			}
+		}
+		// Neighbouring lanes are where two colours must be told apart.
+		for i := 1; i < len(palette); i++ {
+			h1, _, _ := tideui.Hue(palette[i-1])
+			h2, _, _ := tideui.Hue(palette[i])
+			if hueDistance(h1, h2) < 25 {
+				t.Errorf("%s lanes %d and %d are only %.0f degrees apart",
+					theme.Name, i-1, i, hueDistance(h1, h2))
+			}
+		}
+	}
+}
+
+// A theme with no hue variety of its own must not be given one: that is the
+// thing that makes it an amber or a green phosphor terminal.
+func TestMonochromeThemesKeepTheirSingleColour(t *testing.T) {
+	for _, theme := range []tideui.Theme{tideui.VT52, tideui.VT100} {
+		if !monochromeTheme(theme) && !theme.UsesASCII() {
+			t.Errorf("%s was not recognised as monochrome", theme.Name)
+		}
+		if palette := lanePalette(theme, theme.Bg); len(palette) != 0 {
+			t.Errorf("%s was given %d lane colours", theme.Name, len(palette))
+		}
+	}
+	for _, theme := range []tideui.Theme{tideui.CatppuccinMocha, tideui.Nord, tideui.TokyoNight} {
+		if monochromeTheme(theme) {
+			t.Errorf("%s was treated as monochrome", theme.Name)
+		}
+	}
+	// A monochrome theme still draws the graph, and still separates the node
+	// from the lines by brightness — but two different lines look the same,
+	// because the theme has no second colour to tell them apart with.
+	r := testRenderer(t, tideui.VT100)
+	base := r.Styles.Item.UnsetPadding().UnsetWidth()
+	row := git.GraphRow{Lane: 0, Tracks: []int{0, 1, 2},
+		Glyphs: []git.GraphGlyph{git.GraphNode, git.GraphVertical, git.GraphVertical}}
+	out := renderGraphRow(r, row, false, false, graphWidth(3), base)
+	plainSet := glyphSet(false)
+	if !strings.Contains(ansi.Strip(out), plainSet.node) ||
+		!strings.Contains(ansi.Strip(out), plainSet.vertical) {
+		t.Fatalf("monochrome graph lost its glyphs: %q", ansi.Strip(out))
+	}
+	colours := laneColours(out)
+	if len(colours) < 3 {
+		t.Fatalf("monochrome graph drew %d glyphs", len(colours))
+	}
+	if colours[1] != colours[2] {
+		t.Fatalf("monochrome theme gave two lines different colours: %v", colours)
+	}
+	if colours[0] == colours[1] {
+		t.Fatal("monochrome theme stopped separating the node from the lines")
+	}
+}
+
+// A branch has to keep one colour for as long as it exists, whichever column
+// it is in, or the colour says nothing.
+func TestLaneColourFollowsTheLineNotTheColumn(t *testing.T) {
+	r := testRenderer(t, tideui.CatppuccinMocha)
+	base := r.Styles.Item.UnsetPadding().UnsetWidth()
+	render := func(row git.GraphRow) []string {
+		return laneColours(renderGraphRow(r, row, false, false, graphWidth(3), base))
+	}
+	// The same line (track 7) in two different columns keeps its colour.
+	left := render(git.GraphRow{Lane: 0, Glyphs: []git.GraphGlyph{git.GraphNode}, Tracks: []int{7}})
+	right := render(git.GraphRow{Lane: 2, Tracks: []int{-1, -1, 7},
+		Glyphs: []git.GraphGlyph{git.GraphEmpty, git.GraphEmpty, git.GraphNode}})
+	if len(left) == 0 || len(right) == 0 || left[0] != right[0] {
+		t.Fatalf("a line changed colour when it changed column: %v vs %v", left, right)
+	}
+	// Two lines sharing a column at different times do not share a colour.
+	other := render(git.GraphRow{Lane: 0, Glyphs: []git.GraphGlyph{git.GraphNode}, Tracks: []int{8}})
+	if len(other) == 0 || other[0] == left[0] {
+		t.Fatalf("two different lines in one column share a colour: %v", other)
+	}
+	// An untracked lane is never coloured as a line.
+	none := render(git.GraphRow{Lane: 0, Glyphs: []git.GraphGlyph{git.GraphNode, git.GraphVertical},
+		Tracks: []int{0, -1}})
+	if len(none) < 2 || none[0] == none[1] {
+		t.Fatalf("a lane with no line took a line colour: %v", none)
+	}
+}
+
+// Selection must not hide topology, so the palette is rebuilt against the
+// selection background rather than reused from the page.
+func TestLaneColoursAreCorrectedForTheSelectedRow(t *testing.T) {
+	r := testRenderer(t, tideui.CatppuccinMocha)
+	selection := selectionSurface(r)
+	if selection == r.Styles.Theme.Bg {
+		t.Skip("this theme draws selection on the page background")
+	}
+	for i, c := range lanePalette(r.Styles.Theme, selection) {
+		if got := tideui.ContrastRatio(c, selection); got < laneMinContrast {
+			t.Errorf("selected lane colour %d contrast %.2f against the selection", i, got)
+		}
+	}
+	base := r.Styles.ItemSelected.UnsetPadding().UnsetWidth()
+	row := git.GraphRow{Lane: 0, Tracks: []int{0, 1, 2},
+		Glyphs: []git.GraphGlyph{git.GraphNode, git.GraphVertical, git.GraphVertical}}
+	out := renderGraphRow(r, row, false, true, graphWidth(3), base)
+	if !strings.Contains(ansi.Strip(out), glyphSet(false).vertical) {
+		t.Fatal("the selected row lost its lanes")
+	}
+	if colours := laneColours(out); len(colours) < 3 || colours[0] == colours[1] {
+		t.Fatalf("the selected row lost its lane colours: %v", colours)
+	}
+}
+
+// The palette belongs to the theme, so changing the theme changes the graph.
+func TestLaneColoursComeFromTheTheme(t *testing.T) {
+	mocha := lanePalette(tideui.CatppuccinMocha, tideui.CatppuccinMocha.Bg)
+	gruvbox := lanePalette(tideui.GruvboxDark, tideui.GruvboxDark.Bg)
+	if len(mocha) == 0 || len(gruvbox) == 0 {
+		t.Fatal("a themed palette was empty")
+	}
+	if mocha[0] == gruvbox[0] {
+		t.Fatal("two different themes produced the same first lane colour")
+	}
+	if mocha[0] != tideui.CatppuccinMocha.BorderFocus {
+		t.Fatalf("the first lane is not the theme's own accent: %s", mocha[0])
 	}
 }

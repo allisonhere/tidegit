@@ -3,6 +3,9 @@
 A calm, keyboard-first terminal Git client built with TideUI.
 **Milestone 4: history, commit inspection and branch management.**
 
+![The History screen: ref filters, the commit graph with each branch in its own
+colour, and a commit's patch in the inspector](images/screen1.png)
+
 Requires Git 2.23 or newer and Go 1.26.1 or newer.
 
 ```sh
@@ -126,7 +129,28 @@ expected in it, and merges and forks are drawn where they actually happen.
 | `◆` | merge commit |
 | `○` | first commit — no parents |
 | `◉` | the commit HEAD points at |
-| `│ ╭ ╮ ╰ ╯ ─ ┼` | lanes, forks, merges and crossings |
+| `┃ ━ ╭ ╮ ╰ ╯ ╋ ┳ ┻` | lanes, forks, merges, crossings and tees |
+
+Lines use Unicode's heavy box-drawing set with light arcs for the corners. The
+weight is what makes a lane read as a continuous line rather than a column of
+dots, which is what the colours below need in order to say anything; the arcs
+keep the turns soft against the rounded panes. Unicode has no heavy arc, so a
+corner is lighter than the lines it joins — at a terminal's cell size that reads
+as a taper into the turn. A plain theme falls back to ASCII (`| - + * %`).
+
+Each line of development is drawn in its own colour, and keeps it for as long as
+that line exists — across every row it passes through, even where it changes
+column — so a branch can be followed down the page at a glance. A column reused
+by a later branch gets a new colour rather than inheriting the finished one.
+Where a commit reaches sideways, the horizontal run takes that commit's colour
+while a lane it crosses keeps its own, so the two readings stay separable.
+
+The colours are rotations of the theme's own accent, corrected until each clears
+a contrast floor against whatever it is drawn on — including the selection
+background, so selecting a row never hides the topology under it. A theme with
+no hue variety of its own, like the amber VT52 or the green VT100, is left
+monochrome: inventing colour for it would destroy the thing that makes it that
+theme.
 
 Refs are compact badges that carry a text signal as well as a colour, so they
 stay readable in a plain terminal: `@ main` is where HEAD is, `# v1.0` is a tag,
@@ -284,3 +308,11 @@ See [architecture](docs/architecture.md) for API reuse, decisions and future
 seams, and the validation records for what was checked and how:
 [Milestone 3](docs/milestone-3-validation.md),
 [Milestone 4](docs/milestone-4-validation.md).
+
+---
+
+<p align="center">
+  <img src="images/TIDE-small.png"
+       alt="TIDE — Terminal Information Delivery Engine"
+       width="520">
+</p>

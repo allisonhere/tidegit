@@ -31,6 +31,8 @@ func fixture(t *testing.T) Repository {
 	t.Setenv("GIT_COMMITTER_EMAIL", "test@example.invalid")
 	dir := t.TempDir()
 	gitCmd(t, dir, "init", "-b", "main")
+	gitCmd(t, dir, "config", "user.name", "TideGit Test")
+	gitCmd(t, dir, "config", "user.email", "test@example.invalid")
 	return Repository{dir}
 }
 func write(t *testing.T, r Repository, name, body string) {

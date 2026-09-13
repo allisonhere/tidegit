@@ -30,7 +30,7 @@ type diffLine struct {
 func diffLines(d git.Diff) []diffLine {
 	var lines []diffLine
 	if d.Conflict {
-		lines = append(lines, diffLine{"CONFLICT: edit the file externally; staging is not available in Milestone 1.", '!'})
+		lines = append(lines, diffLine{"CONFLICT: staging conflicted files is not available in this milestone.", '!'})
 	}
 	old, newLine := 0, 0
 	inHunk := false
@@ -42,7 +42,7 @@ func diffLines(d git.Diff) []diffLine {
 		switch {
 		case strings.HasPrefix(raw, "diff "):
 			inHunk = false
-			kind = '@'
+			kind = 'm'
 		case strings.HasPrefix(raw, "@@ "):
 			inHunk = true
 			var a, b string
@@ -52,7 +52,7 @@ func diffLines(d git.Diff) []diffLine {
 			}
 			kind = '@'
 		case strings.HasPrefix(raw, "@@@"), !inHunk && (strings.HasPrefix(raw, "index ") || strings.HasPrefix(raw, "--- ") || strings.HasPrefix(raw, "+++ ") || strings.HasPrefix(raw, "Binary")):
-			kind = '@'
+			kind = 'm'
 		case strings.HasPrefix(raw, "+"):
 			kind = '+'
 			if !d.Conflict {
@@ -89,10 +89,10 @@ func outputWidth(lines []diffLine) int {
 	}
 	return max(0, w-1)
 }
-func renderDiff(lines []diffLine, r tideui.Renderer, offset, horizontal, height, width int) string {
+func renderDiff(lines []diffLine, r tideui.Renderer, offset, horizontal, height, width, active int) string {
 	offset = min(offset, max(0, len(lines)-height))
 	out := make([]string, 0, height)
-	for _, line := range lines[offset:min(len(lines), offset+height)] {
+	for i, line := range lines[offset:min(len(lines), offset+height)] {
 		style := r.Styles.DetailBody
 		switch line.kind {
 		case '+':
@@ -101,8 +101,26 @@ func renderDiff(lines []diffLine, r tideui.Renderer, offset, horizontal, height,
 			style = style.Foreground(r.Styles.Theme.Error)
 		case '@':
 			style = style.Foreground(r.Styles.Theme.BorderFocus).Bold(true)
+		case 'm':
+			style = r.Styles.DetailMeta.Italic(false)
 		}
-		out = append(out, style.Render(ansi.Cut(line.text, horizontal, horizontal+width)))
+		prefix := "  "
+		if i+offset == active {
+			prefix = "> "
+			style = r.Styles.ItemSelected
+		}
+		text := ansi.Cut(line.text, horizontal, horizontal+max(0, width-2))
+		if i+offset == active {
+			out = append(out, style.Width(width).Render(prefix+text))
+			continue
+		}
+		if (line.kind == '+' || line.kind == '-' || line.kind == ' ') && len(line.text) >= 12 && horizontal == 0 {
+			gutter := ansi.Cut(line.text, 0, 12)
+			body := ansi.Cut(line.text, 12, max(12, width-2))
+			out = append(out, r.Styles.DetailMeta.Italic(false).Render(prefix+gutter)+style.Render(body))
+			continue
+		}
+		out = append(out, style.Render(prefix+text))
 	}
 	return strings.Join(out, "\n")
 }

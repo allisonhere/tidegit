@@ -42,9 +42,32 @@ No built-in Shift-Space binding was found; `z` provides discoverable expansion.
 - `internal/ui/history.go` / `history_view.go`: History state and rendering.
 - `internal/ui/branches.go` / `branches_view.go`: Branches state and rendering.
 - `internal/ui/graph_view.go`: graph glyphs and ref badges.
-- `internal/ui/palette.go`, `internal/ui/prompt.go`: command palette, one-line
-  prompts and confirmations.
+- `internal/ui/palette.go`, `internal/ui/prompt.go`, `internal/ui/choice.go`:
+  command palette, one-line prompts, confirmations and short option lists.
 - `internal/ui/visual.go`: shared chrome, help panels and activity indicator.
+- `internal/git/remote.go`: remote model, fetch/pull/push and the typed
+  classification of network failures. No UI imports.
+- `internal/git/stash.go`: stash listing, files, per-file patches and the
+  create/apply/pop/drop mutations.
+- `internal/ui/operation.go`: the reusable operation-details component, the
+  goroutine-safe progress buffer and post-operation refresh.
+- `internal/ui/remote.go` / `remote_view.go`: Remotes screen state and rendering.
+- `internal/ui/stash.go` / `stash_view.go`: Stash screen state and rendering.
+- `internal/git/state.go`: repository-operation detection and conflict kinds,
+  read from Git's state files rather than process memory.
+- `internal/git/conflict.go`: unmerged index stages, conflict-marker parsing and
+  the file-level resolution actions.
+- `internal/git/continue.go`, `recover.go`, `reflog.go`: continue/skip/abort,
+  reset/revert/switch-detached, and the recovery timeline.
+- `internal/ui/conflicts.go` / `conflicts_view.go`: Conflicts screen and logic.
+- `internal/ui/reflog.go` / `reflog_view.go`: Reflog screen and logic.
+- `internal/ui/recovery.go`, `reset.go`: the shared recovery runner, destructive
+  confirmations and the reset/restore workflows.
+- `internal/config`: typed configuration, XDG paths, layering, validation,
+  migration, atomic persistence and persistent state. No UI imports.
+- `internal/ui/settings.go` / `settings_view.go`: the Settings screen. It reads
+  the setting catalog and resolved values; it never parses TOML itself.
+- `internal/ui/keys.go`: the stable action catalog and the customizable keymap.
 
 Git runs through argument arrays, never a shell. Pathspecs are literal and
 separated with `--`. Status uses `--porcelain=v2 --branch -z` and retains paths
@@ -292,6 +315,144 @@ The floors are the ones the built-in themes already meet, so correction is close
 to a no-op on a hand-tuned palette and only moves a colour that genuinely fails.
 The focused pane border is deliberately not corrected at theme level, because
 `BuildStyles` already lifts that one where it renders.
+
+## Remotes and stashes (Milestone 5)
+
+Remote names, URLs and tracking branches come from Git configuration and
+`for-each-ref`, never from `git remote -v` or any human-oriented output.
+`config --null --get-regexp` keeps a URL containing spaces unambiguous, and
+`remote.pushDefault`, `branch.<name>.pushRemote`/`.remote`, then `origin`, then a
+sole remote resolve the default in that order. When that resolution is
+ambiguous the model returns "", and the UI asks through a small choice panel
+rather than guessing.
+
+Network commands run through `runStream`, a sibling of the ordinary runner that
+reads Git's stderr as it arrives while still capturing it in full. It is the
+only place a subprocess is streamed, and it appends `GIT_TERMINAL_PROMPT=0` so
+Git cannot stop on a credential prompt the alt-screen UI cannot show; SSH
+agents, SSH config and credential helpers are untouched. Git is asked for
+progress explicitly (`--progress`) because a pipe suppresses it by default.
+`stash push -u` is the one command that runs without `--literal-pathspecs`,
+because Git implements include-untracked through pathspec magic that the flag
+disables; the stash argument list contains no caller paths, so nothing is left
+ambiguous.
+
+Fetch, pull and push are ordinary `git fetch`, `git pull` and `git push`. Pull
+passes no strategy flag, so `pull.rebase`/`pull.ff` and Git's own refusal for an
+ambiguous divergence are preserved. Push passes no refspec when an upstream
+exists, so `push.default` still decides; a first push alone adds
+`--set-upstream`. Failures are classified by inspecting Git's stderr into
+authentication, DNS, unreachable host, permission, missing repository,
+non-fast-forward, protected branch, missing upstream, pull strategy, conflict
+and dirty working tree. The classification adds a plain sentence and never
+discards the underlying `CommandError`, which the operation panel shows under
+`e`.
+
+The operation-details component is deliberately generic: a title, a target, a
+running/done/failed state, a concise summary, a bounded raw-output buffer and a
+retry closure. Fetch, pull, push and stash all report through it, and the same
+shape is what rebase, cherry-pick and clone will use. Progress is written from
+the command goroutine into a mutex-guarded buffer; the model is never written
+from a goroutine. A finished operation invalidates history, branch, stash and
+remote caches and re-reads the working-tree snapshot, so no screen shows state
+from before the change.
+
+Stash entries are parsed from `git stash list --format` with the same separator
+scheme history uses; the source branch and message are split out of the stash
+commit's own generated subject in the Git layer, not the UI. Files come from
+`stash show --numstat`/`--name-status` and one file's patch from `stash show -p`,
+split per file and rendered through the shared diff renderer. Because
+`stash@{n}` renumbers after a drop or pop, a reload restores the selection by
+the stash's commit id, and no action ever runs against a stale index. Apply,
+pop and drop go through the same per-repository mutation semaphore as staging,
+branch work and commits; a conflicted apply or pop is detected and the stash is
+left exactly where Git left it.
+
+## Conflicts and recovery (Milestone 6)
+
+Repository operation state is read from Git's own state files, never from UI
+memory. `State` resolves `MERGE_HEAD`, `CHERRY_PICK_HEAD`, `REVERT_HEAD`,
+`rebase-merge`/`rebase-apply` and `BISECT_LOG` through `rev-parse --git-path`,
+so a fresh process rediscovers a half-finished rebase before its first scan
+completes. Rebase progress comes from `msgnum`/`end` (or `next`/`last`), the
+branch from `head-name`, and the remaining cherry-pick/revert steps from the
+sequencer's `todo`. The status scan carries the state alongside the file list,
+and the header rule becomes a state ribbon while an operation is active. A
+restart therefore needs no special handling: the same scan finds the state.
+
+Conflict kinds come from porcelain v2's unmerged `XY` codes (`UU`, `AA`, `DU`,
+`UD`, `AU`, `UA`, `DD`), not from scanning text. Stages come from one
+`ls-files --unmerged` call that yields each side's blob id and mode; blob
+contents are then read by object id, so no path ever enters revision syntax.
+Conflict markers are parsed into structured regions only for files Git already
+reports as unmerged, and only complete `<<<<<<<`/`=======`/`>>>>>>>` blocks
+(with an optional diff3 `|||||||` base) count; a stray separator line in
+ordinary content is ignored. Regions are stored with 1-based line ranges so the
+working-file view can colour each side without re-parsing.
+
+Resolution is deliberately split: `ResolveOurs`/`ResolveTheirs` write one stage
+over the working file and stop, while the uppercase UI actions call the same
+functions with `mark` set. Marking resolved is `git add -A`, so the index stays
+the single source of truth and a deletion resolution is recorded too. Keep-both
+is a literal concatenation of the two sides, left unstaged; it does not pretend
+to merge. An external editor is launched with `tea.ExecProcess`, which suspends
+and restores the alt screen, and its return only refreshes the file.
+
+Continue, skip and abort are Git's own porcelain commands with `GIT_EDITOR=true`
+so a prepared message is accepted instead of opening an editor. Git performs
+every safety check itself; TideGit adds wording, never bypasses. Abort always
+confirms and names the operation and what will be restored.
+
+The reflog is read with `git reflog --date=unix`, which makes the selector carry
+the reflog entry's own timestamp; the entry's normalised `HEAD@{n}` selector is
+recomputed from position. Recovery reuses the existing commit inspector
+(`CommitDetail`, `CommitFiles`, `CommitDiff`) and the shared diff renderer.
+Creating a branch at an entry is the prominent action; reset and switch-detach
+are behind the reusable destructive confirmation, which states the exact target,
+what changes, and whether the reflog keeps it recoverable. Reset's three modes
+each carry their own description, and hard reset is the only one marked
+destructive.
+
+## Configuration and state (Milestone 7)
+
+`internal/config` is the only package that reads or writes configuration. It
+resolves XDG paths with `os.UserHomeDir` rather than string-building `~`, and it
+keeps configuration and state in separate files with separate version numbers.
+The typed `Config` is a set of defaults plus overrides; `Default` is the single
+source of truth, and loading unmarshals only the keys a file actually contains,
+so a partial file is safe.
+
+The config is layered deliberately: compiled defaults, then `config.toml`, then
+an app-managed `overrides.toml`, then session overrides such as `-theme`. The
+`Store` owns that merge and is the only writer. It never rewrites `config.toml`;
+in-app changes go to `overrides.toml`, which is why a hand-edited file with
+comments survives the Settings screen byte for byte. Writes are atomic: a temp
+file in the same directory is written, fsynced and renamed. This is the spec's
+"store app-managed overrides separately" option, chosen because the available
+TOML writer cannot preserve comments.
+
+Reading is tolerant by design. Malformed TOML, an invalid enum or range, an
+unsupported future version and a conflicting keybinding are reported but never
+fatal: the loader returns the defaults with an error, and a reload keeps the
+last valid configuration. Unknown keys become warnings, with a nearest known
+path suggested through a small Levenshtein pass. The migration seam is a map
+from target version to a function; version 1 has none, and a later milestone
+adds one entry per version without touching the loader.
+
+The Settings screen is driven by a catalog: every fixed setting is a `Setting`
+with a path, category, kind, enum or range, default accessor and a typed setter.
+The screen renders controls from that metadata and never knows field names; the
+config package never knows widgets. Keybindings are the one dynamic map, edited
+by stable action id. The action catalog in `ui/keys.go` holds each id, its
+description and its default key; `globalKey` reverse-looks-up a pressed key and
+dispatches through the same handlers the original hardcoded switches used, so
+rebinding changes the key and not the behaviour. Resolving the keymap reports
+unknown ids and duplicate keys instead of silently accepting them.
+
+Persistent state is its own versioned file. It carries the last repository, a
+bounded recent list, the last screen and dismissed hints, and corruption falls
+back to a fresh state rather than blocking startup. Configuration reset clears
+only `overrides.toml`; it never touches state.
 
 ## Remaining concerns
 

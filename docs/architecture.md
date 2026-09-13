@@ -4,14 +4,10 @@
 
 Before implementation, the local TideUI source, its README, and TideMail's Ripple
 adapter were inspected, along with the cached Ripple v0.3.0 API documentation.
-The build pins TideUI `v0.2.3-0.20260823151826-81535e78c84e`, which contains
-the soft-panel API.
-
-**Temporary:** `go.mod` currently carries a local `replace` for TideUI pointing
-at `/home/allie/Projects/tideui`, because the background-continuity fix
-(`StyleOver`) is not in a published version yet. This is machine-specific and
-must be removed once TideUI is tagged and pushed; the pin then moves to that
-version instead.
+The build pins a published TideUI containing the soft-panel API, the background
+continuity helpers (`StyleOver`) and the exported contrast correction
+(`CorrectThemeContrast`, `ShiftHue`). There is no local `replace`: the pin is a
+version every machine can resolve.
 
 TideUI is a view-oriented toolkit. It does **not** own the application model,
 focus routing, mouse hit testing or arbitrary list navigation. TideGit owns

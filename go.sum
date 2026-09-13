@@ -1,7 +1,7 @@
 github.com/allisonhere/ripple v0.3.0 h1:0g/sPUnVhxl8rNEjnU8XJH6J0ri6iaUxd++p2PvzSpY=
 github.com/allisonhere/ripple v0.3.0/go.mod h1:tUOwwHoip07xZ2C+xDtwLFF5dkPCUliQ8OqL6FEbO+I=
-github.com/allisonhere/tideui v0.2.3-0.20260823151826-81535e78c84e h1:XTo31iaB+oXnKHCNJIGNuPWeVvOj2gFFp6H1g842BgM=
-github.com/allisonhere/tideui v0.2.3-0.20260823151826-81535e78c84e/go.mod h1:gGvJLtvSPce3sf/1caa7xWw/YjXHKi311T6DUaLs4gQ=
+github.com/allisonhere/tideui v0.2.3-0.20260913140842-bbd01b32c736 h1:c3oKPXwNeyR9En3JWdK6nroK28ku2jKoHkfBa1buvFw=
+github.com/allisonhere/tideui v0.2.3-0.20260913140842-bbd01b32c736/go.mod h1:gGvJLtvSPce3sf/1caa7xWw/YjXHKi311T6DUaLs4gQ=
 github.com/aymanbagabas/go-osc52/v2 v2.0.1 h1:HwpRHbFMcZLEVr42D4p7XBqjyuxQH5SMiErDT4WkJ2k=
 github.com/aymanbagabas/go-osc52/v2 v2.0.1/go.mod h1:uYgXzlJ7ZpABp8OJ+exZzJJhRNQ2ASbcXHWsFqH8hp8=
 github.com/charmbracelet/bubbles v1.0.0 h1:12J8/ak/uCZEMQ6KU7pcfwceyjLlWsDLAxB5fXonfvc=

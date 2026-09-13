@@ -402,6 +402,10 @@ func classifyRemoteError(op string, err error) error {
 		strings.Contains(stderr, "connection refused") ||
 		strings.Contains(stderr, "network is unreachable") ||
 		strings.Contains(stderr, "could not connect") ||
+		// curl's own wording, which varies by build: older versions say
+		// "connection refused", newer ones "couldn't connect to server".
+		strings.Contains(stderr, "couldn't connect to server") ||
+		strings.Contains(stderr, "failed to connect to") ||
 		strings.Contains(stderr, "connection reset by peer") ||
 		strings.Contains(stderr, "no route to host"):
 		return failure(RemoteHostUnreachable, "Could not reach the remote host · check your network connection")

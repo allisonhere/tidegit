@@ -234,3 +234,21 @@ func TestPullRefusesDirtyWorktree(t *testing.T) {
 		t.Fatalf("local work was disturbed: %q", got)
 	}
 }
+
+// Git relays curl's wording verbatim, and curl builds disagree about how an
+// unreachable host reads, so the classifier is pinned against each spelling
+// rather than against whatever the local build happens to print.
+func TestClassifyRemoteErrorUnreachableWordings(t *testing.T) {
+	for _, stderr := range []string{
+		"fatal: unable to access 'https://127.0.0.1:1/none.invalid/repo.git/': Failed to connect to 127.0.0.1 port 1 after 0 ms: Couldn't connect to server",
+		"fatal: unable to access 'https://127.0.0.1:1/none.invalid/repo.git/': Failed to connect to 127.0.0.1 port 1: Connection refused",
+		"ssh: connect to host example.invalid port 22: Network is unreachable",
+		"ssh: connect to host example.invalid port 22: No route to host",
+	} {
+		err := classifyRemoteError("fetch", &CommandError{Result: Result{Stderr: stderr, ExitCode: 128}})
+		var remoteErr *RemoteError
+		if !errors.As(err, &remoteErr) || remoteErr.Kind != RemoteHostUnreachable {
+			t.Fatalf("%q classified as %v", stderr, err)
+		}
+	}
+}

@@ -55,11 +55,18 @@ func (m *Model) updateThemePickerKey(msg tea.KeyMsg) tea.Cmd {
 
 // applyTheme switches to a theme by name, resolving the Omarchy-following one
 // against the live desktop palette and starting the poll that keeps it current.
+// The choice is persisted so it survives a restart.
 func (m *Model) applyTheme(name string) tea.Cmd {
-	theme, ok := ResolveTheme(name)
+	theme, ok := resolveConfiguredTheme(name)
 	if !ok {
 		m.notice = "Unknown theme " + safeText(name)
 		return nil
+	}
+	if m.store != nil {
+		if err := m.store.Set("appearance.theme", name); err != nil {
+			m.notice = err.Error()
+		}
+		m.cfg = m.store.Config()
 	}
 	m.theme = theme
 	if isMatchOmarchy(name) {

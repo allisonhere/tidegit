@@ -44,7 +44,7 @@ func TestRenderingBoundedAndSafe(t *testing.T) {
 	m.status.Branch = "main"
 	m.status.Groups[0] = []git.File{{Path: "evil\x1b]52;c;test\a"}}
 	m.diff = git.Diff{Patch: "@@ -1 +1 @@\n-old\n+new\x1b[2J\n"}
-	m.lines = diffLines(m.diff)
+	m.lines = diffLines(m.diff, true)
 	for _, size := range [][2]int{{120, 30}, {65, 12}, {40, 10}, {8, 4}, {1, 1}} {
 		m.width, m.height = size[0], size[1]
 		v := m.View()
@@ -57,21 +57,21 @@ func TestRenderingBoundedAndSafe(t *testing.T) {
 	}
 }
 func TestDiffLineNumbers(t *testing.T) {
-	lines := diffLines(git.Diff{Patch: "@@ -10,2 +20,2 @@\n-old\n+new\n same\n"})
+	lines := diffLines(git.Diff{Patch: "@@ -10,2 +20,2 @@\n-old\n+new\n same\n"}, true)
 	if !strings.Contains(lines[1].text, "10") || !strings.Contains(lines[2].text, "20") || !strings.Contains(lines[3].text, "11    21") {
 		t.Fatalf("%+v", lines)
 	}
 }
 
 func TestPatchContentResemblingHeaders(t *testing.T) {
-	lines := diffLines(git.Diff{Patch: "@@ -1 +1 @@\n--- content\n+++ content\n"})
+	lines := diffLines(git.Diff{Patch: "@@ -1 +1 @@\n--- content\n+++ content\n"}, true)
 	if lines[1].kind != '-' || lines[2].kind != '+' || !strings.Contains(lines[2].text, "1") {
 		t.Fatalf("content mistaken for header: %+v", lines)
 	}
 }
 
 func TestPreviewLineLimit(t *testing.T) {
-	lines := diffLines(git.Diff{Patch: strings.Repeat("+x\n", 25000)})
+	lines := diffLines(git.Diff{Patch: strings.Repeat("+x\n", 25000)}, true)
 	if len(lines) != 20001 || !strings.Contains(lines[len(lines)-1].text, "limited") {
 		t.Fatalf("unbounded preview: %d", len(lines))
 	}

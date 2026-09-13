@@ -208,7 +208,7 @@ func (m *Model) branchCommitRow(r tideui.Renderer, index, width, graphW int, now
 	if selected {
 		meta = base
 	}
-	right := meta.Render(fmt.Sprintf("%4s", relativeTime(c.AuthorTime, now)))
+	right := meta.Render(fmt.Sprintf("%4s", m.timeAgo(c.AuthorTime)))
 	hash := ""
 	if width >= widthForHash {
 		hash = meta.Render(c.Short + " ")
@@ -273,7 +273,7 @@ func (m *Model) branchInspectorPane(r tideui.Renderer, width, height int) string
 	field("tip", safeText(branch.Subject))
 	field("author", safeText(branch.Author))
 	if !branch.CommitTime.IsZero() {
-		field("when", fmt.Sprintf("%s ago · %s", relativeTime(branch.CommitTime, time.Now()),
+		field("when", fmt.Sprintf("%s ago · %s", m.timeAgo(branch.CommitTime),
 			branch.CommitTime.Format("2006-01-02 15:04")))
 	}
 	if branch.Upstream != "" {

@@ -116,7 +116,7 @@ func (r Repository) applyHunk(ctx context.Context, h Hunk, reverse bool) error {
 		}
 		// Re-read and compare the semantic target before applying. This rejects
 		// stale or caller-modified patches, including truncated and binary input.
-		d, err := r.Diff(ctx, h.Source, h.File)
+		d, err := r.Diff(ctx, h.Source, h.File, h.Context)
 		if err != nil {
 			return fail(err)
 		}

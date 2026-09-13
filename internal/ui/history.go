@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/allisonhere/tidegit/internal/diff"
 	"github.com/allisonhere/tidegit/internal/git"
 	"github.com/allisonhere/tideui"
 	tea "github.com/charmbracelet/bubbletea"
@@ -57,11 +58,9 @@ type historyState struct {
 
 	// showDiff swaps the inspector for one file's patch from this commit.
 	showDiff    bool
-	diffLines   []diffLine
+	view        diffView
 	diffLabel   string
 	diffLoading bool
-	diffScroll  tideui.PaneScroller
-	diffAcross  int
 
 	cache map[string]commitDetail
 	order []string // cache insertion order, oldest first
@@ -112,7 +111,7 @@ type commitDetailMsg struct {
 }
 type commitDiffMsg struct {
 	id    int
-	lines []diffLine
+	patch diff.Patch
 	label string
 	err   error
 }
@@ -161,7 +160,7 @@ func (m *Model) loadHistory(more bool) tea.Cmd {
 		h.exhausted = false
 		h.err = ""
 	}
-	opts := git.HistoryOptions{Skip: skip, Limit: git.HistoryBatch, Search: h.search}
+	opts := git.HistoryOptions{Skip: skip, Limit: m.historyBatch(), Search: h.search}
 	if f := h.filter(); f.All {
 		opts.All = true
 	} else if f.Rev != "" {
@@ -259,17 +258,17 @@ func (m *Model) loadCommitFileDiff() tea.Cmd {
 	file := h.detail.files[h.fileIndex]
 	h.showDiff = true
 	h.diffLoading = true
-	h.diffLines = nil
-	h.diffAcross = 0
-	h.diffScroll.ScrollToTop()
 	h.diffLabel = fmt.Sprintf("Commit %s · %s", h.detail.commit.Short, safeText(file.Path))
 	ctx, cancel := context.WithTimeout(m.ctx, 30*time.Second)
 	m.diffCancel = cancel
 	id, repo, commit, label := m.diffID, m.repo, h.detail.commit, h.diffLabel
+	ctxLines, whitespace := m.diffContext(), m.whitespaceMode()
 	return tea.Batch(func() tea.Msg {
 		defer cancel()
-		d, err := repo.CommitDiff(ctx, commit, file)
-		return commitDiffMsg{id: id, lines: diffLines(d), label: label, err: err}
+		d, err := repo.CommitDiffWith(ctx, commit, file, git.DiffOptions{Context: ctxLines, Whitespace: whitespace})
+		patch := diff.Parse(d.Patch)
+		patch.Label = "COMMIT " + commit.Short
+		return commitDiffMsg{id: id, patch: patch, label: label, err: err}
 	}, pulse())
 }
 
@@ -291,18 +290,18 @@ func (m *Model) handleHistoryResult(msg tea.Msg) (bool, tea.Cmd) {
 		h.err = ""
 		if msg.more {
 			// A short page means the walk reached the end of this filter.
-			if len(msg.commits) < git.HistoryBatch {
+			if len(msg.commits) < m.historyBatch() {
 				h.exhausted = true
 			}
 			h.commits = append(h.commits, msg.commits...)
 		} else {
-			if len(msg.commits) < git.HistoryBatch {
+			if len(msg.commits) < m.historyBatch() {
 				h.exhausted = true
 			}
 			h.commits = msg.commits
 			h.selected, h.top = 0, 0
 			if msg.refs != nil {
-				h.filters = buildFilters(msg.refs, msg.head)
+				h.filters = m.buildFilters(msg.refs, msg.head)
 				h.filterIndex = min(h.filterIndex, max(0, len(h.filters)-1))
 			}
 			m.head = msg.head
@@ -339,14 +338,16 @@ func (m *Model) handleHistoryResult(msg tea.Msg) (bool, tea.Cmd) {
 			h.showDiff = false
 			return true, nil
 		}
-		h.diffLines, h.diffLabel = msg.lines, msg.label
+		h.view.reset(msg.patch, msg.patch.Label)
+		h.diffLabel = msg.label
 		return true, nil
 	}
 	return false, nil
 }
 
-// buildFilters turns the ref list into the left pane's rows.
-func buildFilters(refs []git.Ref, head git.Head) []historyFilter {
+// buildFilters turns the ref list into the left pane's rows. Remote branches
+// and tags respect git.show_remote_branches and git.show_tags.
+func (m *Model) buildFilters(refs []git.Ref, head git.Head) []historyFilter {
 	filters := []historyFilter{
 		{Label: "Current HEAD", Head: true},
 		{Label: "All refs", All: true},
@@ -366,8 +367,12 @@ func buildFilters(refs []git.Ref, head git.Head) []historyFilter {
 		filters = append(filters, group...)
 	}
 	section("LOCAL", git.RefLocal)
-	section("REMOTE", git.RefRemote)
-	section("TAGS", git.RefTag)
+	if m.showRemoteBranches() {
+		section("REMOTE", git.RefRemote)
+	}
+	if m.showTags() {
+		section("TAGS", git.RefTag)
+	}
 	_ = head
 	return filters
 }
@@ -411,7 +416,7 @@ func (m *Model) moveCommit(delta int) tea.Cmd {
 	}
 	h.selected = next
 	cmds := []tea.Cmd{m.scheduleDetail()}
-	if len(h.commits)-h.selected < git.HistoryBatch/3 {
+	if len(h.commits)-h.selected < m.historyBatch()/3 {
 		cmds = append(cmds, m.loadHistory(true))
 	}
 	return tea.Batch(cmds...)
@@ -448,30 +453,35 @@ func (m *Model) updateHistoryKey(key string, msg tea.KeyMsg) tea.Cmd {
 			return nil
 		}
 	}
-	// The diff view owns scrolling while it is open.
+	// The diff view owns navigation while it is open.
 	if h.showDiff && m.focus == 2 {
+		flat := h.view.flat(m.diffOptionsFrom(), true)
 		switch key {
 		case "esc", "q", "backspace":
 			h.showDiff = false
 			return nil
 		case "j", "down":
-			h.diffScroll.ScrollDown(1)
+			h.view.line = min(h.view.line+1, max(0, len(flat)-1))
 		case "k", "up":
-			h.diffScroll.ScrollUp(1)
+			h.view.line = max(0, h.view.line-1)
 		case "pgdown":
-			h.diffScroll.ScrollDown(max(1, m.height-12))
+			h.view.line = min(h.view.line+max(1, m.historyPaneHeight()-4), max(0, len(flat)-1))
 		case "pgup":
-			h.diffScroll.ScrollUp(max(1, m.height-12))
+			h.view.line = max(0, h.view.line-max(1, m.historyPaneHeight()-4))
 		case "home":
-			h.diffScroll.ScrollToTop()
+			h.view.line = 0
 		case "end":
-			h.diffScroll.ScrollDown(len(h.diffLines))
-		case "h", "left":
-			h.diffAcross = max(0, h.diffAcross-8)
-		case "l", "right":
-			h.diffAcross = min(h.diffAcross+8, outputWidth(h.diffLines))
+			h.view.line = max(0, len(flat)-1)
+		case "]":
+			h.view.moveHunk(1, m.diffOptionsFrom())
+		case "[":
+			h.view.moveHunk(-1, m.diffOptionsFrom())
+		case "ctrl+f":
+			return m.startDiffSearch()
+		case "v":
+			return m.toggleDiffMode()
 		}
-		h.diffScroll.ClampTo(len(h.diffLines), m.historyPaneHeight()-2)
+		h.view.ensureVisible(m.historyPaneHeight() - 2)
 		return nil
 	}
 	switch key {

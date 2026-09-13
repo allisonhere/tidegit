@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/allisonhere/ripple"
+	"github.com/allisonhere/tidegit/internal/diff"
 	"github.com/allisonhere/tidegit/internal/git"
 	"github.com/allisonhere/tideui"
 	tea "github.com/charmbracelet/bubbletea"
@@ -21,12 +22,12 @@ type commitState struct {
 	errorText                                       string
 	outputScroll                                    tideui.PaneScroller
 	refreshing                                      bool
-	preview                                         []diffLine
+	view                                            diffView
 	previewLoading                                  bool
 }
 type commitPreviewMsg struct {
 	id    int
-	lines []diffLine
+	patch diff.Patch
 	err   error
 }
 
@@ -39,7 +40,6 @@ func (m *Model) loadCommitPreview() tea.Cmd {
 		m.diffCancel()
 	}
 	m.diffID++
-	c.preview = nil
 	c.previewLoading = false
 	files := c.info.Status.Groups[git.Staged]
 	if len(files) == 0 {
@@ -48,11 +48,14 @@ func (m *Model) loadCommitPreview() tea.Cmd {
 	ctx, cancel := context.WithTimeout(m.ctx, 30*time.Second)
 	m.diffCancel = cancel
 	id, repo, file := m.diffID, m.repo, files[c.selected]
+	ctxLines, whitespace := m.diffContext(), m.whitespaceMode()
 	c.previewLoading = true
 	return func() tea.Msg {
 		defer cancel()
-		d, err := repo.Diff(ctx, git.Staged, file)
-		return commitPreviewMsg{id, diffLines(d), err}
+		d, err := repo.DiffWith(ctx, git.Staged, file, git.DiffOptions{Context: ctxLines, Whitespace: whitespace})
+		patch := diff.Parse(d.Patch)
+		patch.Label = "STAGED"
+		return commitPreviewMsg{id, patch, err}
 	}
 }
 
@@ -138,7 +141,7 @@ func (m *Model) handleCommitResult(msg tea.Msg) (bool, tea.Cmd) {
 			if msg.err != nil {
 				m.compose.errorText = msg.err.Error()
 			} else {
-				m.compose.preview = msg.lines
+				m.compose.view.reset(msg.patch, msg.patch.Label)
 			}
 		}
 		return true, nil
@@ -153,6 +156,12 @@ func (m *Model) handleCommitResult(msg tea.Msg) (bool, tea.Cmd) {
 			return true, pulse()
 		}
 		if b := m.branches; b != nil && (b.loading || b.commitsLoading || b.extraLoading) {
+			return true, pulse()
+		}
+		if s := m.stash; s != nil && (s.loading || s.filesLoading || s.diffLoading) {
+			return true, pulse()
+		}
+		if r := m.remotes; r != nil && r.loading {
 			return true, pulse()
 		}
 		return true, nil

@@ -14,12 +14,55 @@ const (
 	screenStatus screen = iota
 	screenHistory
 	screenBranches
+	screenStash
+	screenRemotes
+	screenConflicts
+	screenReflog
+	screenSettings
 )
 
 var screenNames = map[screen]string{
-	screenStatus:   "STATUS",
-	screenHistory:  "HISTORY",
-	screenBranches: "BRANCHES",
+	screenStatus:    "STATUS",
+	screenHistory:   "HISTORY",
+	screenBranches:  "BRANCHES",
+	screenStash:     "STASH",
+	screenRemotes:   "REMOTES",
+	screenConflicts: "CONFLICTS",
+	screenReflog:    "REFLOG",
+	screenSettings:  "SETTINGS",
+}
+
+// screenDefaultName maps a screen to the identifier layout.default_screen
+// accepts.
+func screenDefaultName(s screen) string {
+	switch s {
+	case screenHistory:
+		return "history"
+	case screenBranches:
+		return "branches"
+	case screenStash:
+		return "stash"
+	case screenRemotes:
+		return "remotes"
+	case screenConflicts:
+		return "conflicts"
+	case screenReflog:
+		return "reflog"
+	case screenSettings:
+		return "settings"
+	default:
+		return "status"
+	}
+}
+
+// screenByName is the inverse, for the configured startup screen.
+func screenByName(name string) screen {
+	for s := screenStatus; s <= screenSettings; s++ {
+		if screenDefaultName(s) == name {
+			return s
+		}
+	}
+	return screenStatus
 }
 
 // handleKey routes one keystroke: global gates first, then whichever overlay is
@@ -41,14 +84,39 @@ func (m *Model) handleKey(msg tea.KeyMsg) tea.Cmd {
 	if m.prompt != nil {
 		return m.updatePromptKey(key, msg)
 	}
+	if m.choice != nil {
+		return m.updateChoiceKey(key)
+	}
 	if m.confirm != nil {
 		return m.updateConfirmKey(key)
+	}
+	if m.op != nil && m.op.show {
+		return m.updateOperationKey(key)
 	}
 	if m.help {
 		if key == "esc" || key == "q" || key == "?" {
 			m.help = false
 		}
 		return nil
+	}
+	// While capturing a keybinding, the next key is the binding, not a command.
+	if m.screen == screenSettings && m.settings != nil && m.settings.effective {
+		return m.updateSettingsKey(key, msg)
+	}
+	if m.screen == screenSettings && m.settings != nil && m.settings.capture {
+		return m.captureKey(key)
+	}
+	// A running operation keeps its own controls live even though the rest of
+	// the screen is gated: o watches details, Esc cancels where it is safe.
+	if m.operationRunning() {
+		switch key {
+		case "o":
+			m.op.show = true
+			return nil
+		case "esc":
+			m.cancelOperation()
+			return nil
+		}
 	}
 	// Keep the visible target stable until a mutation and its scan finish.
 	// Focus, expansion, help and quit remain responsive.
@@ -63,52 +131,38 @@ func (m *Model) handleKey(msg tea.KeyMsg) tea.Cmd {
 		return m.updateHistoryKey(key, msg)
 	case screenBranches:
 		return m.updateBranchKey(key, msg)
+	case screenStash:
+		return m.updateStashKey(key, msg)
+	case screenRemotes:
+		return m.updateRemoteKey(key, msg)
+	case screenConflicts:
+		return m.updateConflictKey(key, msg)
+	case screenReflog:
+		return m.updateReflogKey(key, msg)
+	case screenSettings:
+		return m.updateSettingsKey(key, msg)
 	default:
 		return m.updateStatusKey(key, msg)
 	}
 }
 
-// globalKey handles the bindings every screen shares. Screens that are typing
-// into a field opt out so a letter is not swallowed as a command.
+// globalKey handles the bindings every screen shares, resolved through the
+// customizable keymap. Screens that are typing opt out so a letter is not
+// swallowed as a command.
 func (m *Model) globalKey(key string) (tea.Cmd, bool) {
 	if m.typing() {
 		return nil, false
 	}
-	switch key {
-	case "ctrl+p":
-		return m.openPalette(), true
-	case "t":
-		return m.openThemePicker(), true
-	case "1":
-		return m.goToScreen(screenStatus), true
-	case "2":
-		return m.goToScreen(screenHistory), true
-	case "3":
-		return m.goToScreen(screenBranches), true
-	case "tab":
-		m.focus = (m.focus + 1) % 3
-		return nil, true
-	case "shift+tab":
-		m.focus = (m.focus + 2) % 3
-		return nil, true
-	case "z":
-		m.expanded = !m.expanded
-		return nil, true
-	case "?":
-		m.help = true
-		return nil, true
-	case "r", "ctrl+r":
-		return m.refreshScreen(), true
-	case "q":
-		switch {
-		case m.expanded:
-			m.expanded = false
-		case m.screen != screenStatus:
-			return m.goToScreen(screenStatus), true
-		default:
-			return tea.Quit, true
-		}
-		return nil, true
+	// A few screens own a key that also has a global default; their local
+	// meaning wins on that screen.
+	if m.screen == screenStash && key == "p" {
+		return nil, false
+	}
+	if m.screen == screenConflicts && (key == "o" || key == "t") {
+		return nil, false
+	}
+	if id, ok := m.actionForKey(key); ok && m.screenAllowsAction(id) {
+		return m.runKeyAction(id), true
 	}
 	return nil, false
 }
@@ -139,6 +193,21 @@ func (m *Model) typing() bool {
 	if m.branches != nil && m.branches.filtering && m.screen == screenBranches {
 		return true
 	}
+	if m.stash != nil && m.stash.filtering && m.screen == screenStash {
+		return true
+	}
+	if m.remotes != nil && m.remotes.filtering && m.screen == screenRemotes {
+		return true
+	}
+	if m.conflicts != nil && m.conflicts.filtering && m.screen == screenConflicts {
+		return true
+	}
+	if m.reflog != nil && m.reflog.filtering && m.screen == screenReflog {
+		return true
+	}
+	if m.settings != nil && m.settings.searching && m.screen == screenSettings {
+		return true
+	}
 	return false
 }
 
@@ -154,6 +223,16 @@ func (m *Model) goToScreen(s screen) tea.Cmd {
 		return m.openHistory()
 	case screenBranches:
 		return m.openBranches()
+	case screenStash:
+		return m.openStash()
+	case screenRemotes:
+		return m.openRemotes()
+	case screenConflicts:
+		return m.openConflicts()
+	case screenReflog:
+		return m.openReflog()
+	case screenSettings:
+		return m.openSettings()
 	default:
 		m.screen = screenStatus
 		m.focus = min(m.focus, 2)
@@ -171,6 +250,16 @@ func (m *Model) refreshScreen() tea.Cmd {
 		return m.loadHistory(false)
 	case screenBranches:
 		return m.loadBranches()
+	case screenStash:
+		return m.loadStashes()
+	case screenRemotes:
+		return m.loadRemotes()
+	case screenConflicts:
+		return m.reloadConflicts()
+	case screenReflog:
+		return m.loadReflog()
+	case screenSettings:
+		return m.reloadSettings()
 	default:
 		return m.refresh()
 	}
@@ -200,14 +289,8 @@ func (m *Model) updateStatusKey(key string, msg tea.KeyMsg) tea.Cmd {
 		return m.loadDiff()
 	}
 	switch key {
-	case "c":
-		return m.openCommit(false)
-	case "A":
-		return m.openCommit(true)
-	case "s":
-		return m.act(StageFile)
-	case "u":
-		return m.act(UnstageFile)
+	case " ":
+		m.toggleMark()
 	case "S":
 		return m.act(StageHunk)
 	case "U":
@@ -216,6 +299,25 @@ func (m *Model) updateStatusKey(key string, msg tea.KeyMsg) tea.Cmd {
 		m.moveHunk(1)
 	case "[":
 		m.moveHunk(-1)
+	case "v":
+		return m.toggleDiffMode()
+	case "n":
+		m.view.stepMatch(1)
+		m.view.ensureVisible(m.diffViewportHeight())
+		return nil
+	case "N":
+		m.view.stepMatch(-1)
+		m.view.ensureVisible(m.diffViewportHeight())
+		return nil
+	case "ctrl+f":
+		return m.startDiffSearch()
+	case "y":
+		return m.copyDiffLine()
+	case "e":
+		if m.focus == 2 {
+			return m.openDiffInEditor()
+		}
+		return nil
 	case "q":
 		if m.expanded {
 			m.expanded = false
@@ -234,7 +336,10 @@ func (m *Model) updateStatusKey(key string, msg tea.KeyMsg) tea.Cmd {
 	case "shift+tab":
 		m.focus = (m.focus + 2) % 3
 	case "enter":
-		if m.focus < 2 {
+		switch {
+		case m.focus == 2:
+			m.view.toggleGap(m.diffOptionsFrom())
+		case m.focus < 2:
 			m.focus++
 		}
 	case "z":
@@ -261,16 +366,16 @@ func (m *Model) updateStatusKey(key string, msg tea.KeyMsg) tea.Cmd {
 			delta *= max(1, m.height-5)
 		}
 		if m.focus == 2 {
-			if key == "home" {
-				m.scroll.ScrollToTop()
-			} else if key == "end" {
-				m.scroll.ScrollDown(len(m.lines))
-			} else if delta < 0 {
-				m.scroll.ScrollUp(-delta)
-			} else {
-				m.scroll.ScrollDown(delta)
+			flat := m.view.flat(m.diffOptionsFrom(), true)
+			switch key {
+			case "home":
+				m.view.line = 0
+			case "end":
+				m.view.line = max(0, len(flat)-1)
+			default:
+				m.view.line = min(max(0, m.view.line+delta), max(0, len(flat)-1))
 			}
-			m.scroll.ClampTo(len(m.lines), m.diffViewportHeight())
+			m.view.ensureVisible(m.diffViewportHeight())
 		} else if m.focus == 0 {
 			n := min(3, max(0, m.section+delta))
 			if key == "home" {

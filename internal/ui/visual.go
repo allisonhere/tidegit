@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/allisonhere/tidegit/internal/git"
 	"github.com/allisonhere/tideui"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
@@ -12,9 +13,39 @@ import (
 
 // Semantic presentation is derived entirely from TideUI's theme and styles.
 func (m *Model) renderer() tideui.Renderer {
-	return tideui.NewRenderer(m.activeTheme(), tideui.StyleOptions{Density: tideui.Compact, PaneCorners: tideui.RoundCorners, ModalShadow: true})
+	return tideui.NewRenderer(m.activeTheme(), m.styleOptions())
 }
-func clip(s string, w int) string { return ansi.Truncate(s, max(0, w), "") }
+
+// styleOptions maps appearance settings onto TideUI's own options.
+func (m *Model) styleOptions() tideui.StyleOptions {
+	density := tideui.Comfortable
+	corners := tideui.RoundCorners
+	if m.cfg == nil || m.cfg.Appearance.Compact {
+		density = tideui.Compact
+	}
+	if m.cfg != nil && m.cfg.Appearance.BorderStyle == "square" {
+		corners = tideui.SquareCorners
+	}
+	return tideui.StyleOptions{Density: density, PaneCorners: corners, ModalShadow: true}
+}
+
+// icons reports whether Unicode glyphs may be used.
+func (m *Model) icons() bool { return m.cfg == nil || m.cfg.Appearance.Icons }
+
+// animations reports whether the activity indicator may animate.
+func (m *Model) animations() bool { return m.cfg == nil || m.cfg.Appearance.Animations }
+
+// diffContext is the configured unified context size.
+func (m *Model) diffContext() int {
+	if m.cfg == nil {
+		return 3
+	}
+	return m.cfg.Diff.ContextLines
+}
+
+// showLineNumbers reports whether the diff gutter shows line numbers.
+func (m *Model) showLineNumbers() bool { return m.cfg == nil || m.cfg.Diff.LineNumbers }
+func clip(s string, w int) string      { return ansi.Truncate(s, max(0, w), "") }
 
 // padLine fills a line to width with style. It goes through StyleOver because
 // the header and hint bars are built by concatenating styled segments with
@@ -87,13 +118,62 @@ func (m *Model) globalHeader(r tideui.Renderer, mode string) string {
 	if m.width >= 100 {
 		right = muted(r, fmt.Sprintf("%d staged  ·  %d unstaged  ·  %d new   ", len(m.status.Groups[0]), len(m.status.Groups[1]), len(m.status.Groups[2]))) + right
 	}
+	// A running operation shows as a compact chip in the global header, so
+	// network work is visible from any screen without taking it over.
+	if op := m.op; op != nil && op.running {
+		title := op.title
+		if m.cfg != nil && m.cfg.Remote.VerboseProgress {
+			if latest, _ := op.raw.snapshot(); latest != "" {
+				title = clip(safeText(latest), max(8, m.width/3))
+			}
+		}
+		chip := accent(r, m.activity()+" "+safeText(title))
+		right = chip + muted(r, "   ") + right
+	}
 	gap := max(1, m.width-2-lipgloss.Width(left)-lipgloss.Width(right))
 	line := padLine(" "+left+strings.Repeat(" ", gap)+right, m.width, r.Styles.DetailBody)
+	// A paused merge, rebase, cherry-pick or revert replaces the thin rule with
+	// a deliberate ribbon, so the repository's state is the first thing read
+	// without turning the whole screen into an alarm.
+	if ribbon, ok := m.operationRibbon(r); ok {
+		return line + "\n" + ribbon
+	}
 	separator := "─"
-	if m.theme.UsesASCII() {
+	if m.theme.UsesASCII() || !m.icons() {
 		separator = "-"
 	}
 	return line + "\n" + r.Styles.DetailMeta.Italic(false).Render(strings.Repeat(separator, max(0, m.width)))
+}
+
+// operationRibbon renders the global operation state as one full-width line.
+// It names the operation and its progress, states whether conflicts remain,
+// and points at the key that opens the Conflicts screen.
+func (m *Model) operationRibbon(r tideui.Renderer) (string, bool) {
+	state := m.repoState
+	if !state.InProgress() {
+		return "", false
+	}
+	label := state.Operation.Banner()
+	if state.Operation == git.OpRebase && state.Total > 0 {
+		label = fmt.Sprintf("REBASE %d / %d", state.Step, state.Total)
+	}
+	note := "ready to continue"
+	right := "6 continue"
+	if state.Conflicts > 0 {
+		note = plural(state.Conflicts, "unresolved conflict")
+		right = "6 resolve conflicts"
+	}
+	if state.Operation == git.OpBisect {
+		right = "6 inspect"
+	}
+	left := " " + label + "  ·  " + note
+	color := r.Styles.Theme.Unread
+	if state.Conflicts == 0 {
+		color = r.Styles.Theme.BorderFocus
+	}
+	style := r.Styles.DetailBody.Foreground(color).Bold(true)
+	gap := max(1, m.width-lipgloss.Width(left)-lipgloss.Width(right)-1)
+	return padLine(left+strings.Repeat(" ", gap)+right, m.width, style), true
 }
 func (m *Model) hintBar(r tideui.Renderer, hints ...tideui.SoftHint) string {
 	var parts []string
@@ -122,8 +202,11 @@ func plural(n int, noun string) string {
 
 func (m *Model) activity() string {
 	frames := []string{"◐", "◓", "◑", "◒"}
-	if m.theme.UsesASCII() {
+	if m.theme.UsesASCII() || !m.icons() {
 		frames = []string{"|", "/", "-", "\\"}
+	}
+	if !m.animations() {
+		return frames[0]
 	}
 	return frames[m.frame%len(frames)]
 }
@@ -133,56 +216,4 @@ func (m *Model) diffViewportHeight() int {
 		return max(1, m.height-8)
 	}
 	return max(1, m.height-11)
-}
-
-// helpPanel shows only the bindings that act on the current screen, plus the
-// few that work everywhere.
-func (m *Model) helpPanel(r tideui.Renderer) *tideui.Overlay {
-	var sections []struct{ title, body string }
-	switch m.screen {
-	case screenHistory:
-		sections = []struct{ title, body string }{
-			{"HISTORY", "j / k  move through commits    [ Enter ]  inspect\n/  filter subjects            y  copy full hash\nn  branch from this commit"},
-			{"INSPECTOR", "Tab  reach the inspector      j / k  choose a file\nEnter  open that file's patch  Esc  back to the commit"},
-			{"GRAPH", "●  commit   ◆  merge   ○  first commit   ◉  HEAD\nEach branch keeps its own colour down the page.\n@ branch   # tag   origin/… remote"},
-		}
-	case screenBranches:
-		sections = []struct{ title, body string }{
-			{"BRANCHES", "j / k  move            Enter / s  switch to branch\nn  new branch          R  rename        D  delete\n/  filter the list    y  copy target hash"},
-			{"READING IT", "@  current branch      ↑ n  ahead     ↓ n  behind\n✓  up to date         —  no upstream   gone  upstream lost\nRemote-tracking branches are read-only here."},
-		}
-	default:
-		sections = []struct{ title, body string }{
-			{"STAGING", "s / u  stage / unstage FILE\nS / U  stage / unstage HUNK\n[ / ]  choose hunk       /  filter files"},
-			{"COMMIT", "c  compose commit         A  amend HEAD\nUnstage preserves working-tree content."},
-		}
-	}
-	sections = append(sections, struct{ title, body string }{
-		"EVERYWHERE", "1  status   2  history   3  branches   Ctrl-P  commands\nTab  panes    z  expand    r  refresh    t  theme\nq  back / quit    ? / Esc  close help"})
-	var rows []string
-	for _, s := range sections {
-		rows = append(rows, accent(r, s.title), muted(r, s.body), "")
-	}
-	content := strings.Join(rows, "\n")
-	if m.height < 25 {
-		content = accent(r, strings.ToUpper(screenNames[m.screen])) + "\n" +
-			muted(r, compactHelp(m.screen)) + "\n\n" + accent(r, "EVERYWHERE") + "\n" +
-			muted(r, "1/2/3 screens   Ctrl-P commands   Tab panes\nr refresh   t theme   z expand   q back   ? close")
-	}
-	o := r.SoftPanelOverlay(tideui.SoftPanel{Prefix: "tidegit", Title: "keyboard guide",
-		Width: min(62, m.width-6), Content: inset(content, min(62, m.width-6))})
-	return &o
-}
-
-// compactHelp is the short form used when the terminal is too short for the
-// full guide.
-func compactHelp(s screen) string {
-	switch s {
-	case screenHistory:
-		return "j/k commits   Enter inspect   / search\nn branch here   y copy hash"
-	case screenBranches:
-		return "j/k branches   Enter switch   n new\nR rename   D delete   / filter"
-	default:
-		return "s/u file   S/U hunk   [/] choose hunk\nc commit   A amend   / filter"
-	}
 }

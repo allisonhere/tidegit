@@ -68,9 +68,14 @@ func TestNoBackgroundHolesOnAnyScreen(t *testing.T) {
 	m := historyModel(t)
 
 	screens := map[string]func(){
-		"status":   func() { drain(t, m, m.goToScreen(screenStatus)) },
-		"history":  func() { drain(t, m, m.goToScreen(screenHistory)) },
-		"branches": func() { drain(t, m, m.goToScreen(screenBranches)) },
+		"status":    func() { drain(t, m, m.goToScreen(screenStatus)) },
+		"history":   func() { drain(t, m, m.goToScreen(screenHistory)) },
+		"branches":  func() { drain(t, m, m.goToScreen(screenBranches)) },
+		"stash":     func() { drain(t, m, m.goToScreen(screenStash)) },
+		"remotes":   func() { drain(t, m, m.goToScreen(screenRemotes)) },
+		"conflicts": func() { drain(t, m, m.goToScreen(screenConflicts)) },
+		"reflog":    func() { drain(t, m, m.goToScreen(screenReflog)) },
+		"settings":  func() { drain(t, m, m.goToScreen(screenSettings)) },
 	}
 	for _, theme := range []tideui.Theme{tideui.CatppuccinMocha, tideui.CatppuccinLatte, tideui.Nord} {
 		m.theme = theme
@@ -107,10 +112,19 @@ func TestNoBackgroundHolesInOverlays(t *testing.T) {
 			drain(t, m, m.loadBranchDetail())
 			drain(t, m, m.confirmDeleteBranch())
 		},
+		"choice": func() {
+			m.choice = &choiceState{title: "fetch", label: "Choose a remote to fetch",
+				options: []choiceOption{{label: "origin", value: "origin", hint: "default"}}}
+		},
+		"operation": func() {
+			m.op = &operationState{kind: "fetch", verb: "Fetching", title: "Fetch origin",
+				target: "origin", done: true, ok: false, summary: "Authentication failed", raw: &progressBuffer{}}
+			m.op.show = true
+		},
 		"help": func() { m.help = true },
 	}
 	for name, open := range overlays {
-		m.palette, m.prompt, m.confirm, m.help = nil, nil, nil, false
+		m.palette, m.prompt, m.confirm, m.choice, m.op, m.help = nil, nil, nil, nil, nil, false
 		open()
 		view := m.View()
 		for i, line := range strings.Split(view, "\n") {
@@ -122,7 +136,7 @@ func TestNoBackgroundHolesInOverlays(t *testing.T) {
 			t.Fatalf("%s overlay has %d cells with no background", name, holes)
 		}
 	}
-	m.palette, m.prompt, m.confirm, m.help = nil, nil, nil, false
+	m.palette, m.prompt, m.confirm, m.choice, m.op, m.help = nil, nil, nil, nil, nil, false
 }
 
 // The commit screen composes its own chrome outside the pane system, so it is

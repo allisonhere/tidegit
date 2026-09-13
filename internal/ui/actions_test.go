@@ -182,7 +182,7 @@ func TestSelectionAndHunkRenderingAcrossSizes(t *testing.T) {
 	}
 	key(t, m, "?")
 	help := ansi.Strip(m.View())
-	for _, hint := range []string{"s / u", "S / U", "[ / ]", "c  compose commit", "A  amend HEAD", "working-tree"} {
+	for _, hint := range []string{"s / u", "S / U", "[ / ]", "compose a commit", "amend HEAD", "working-tree"} {
 		if !strings.Contains(help, hint) {
 			t.Fatalf("missing help: %s", hint)
 		}

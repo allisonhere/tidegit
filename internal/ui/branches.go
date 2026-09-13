@@ -26,6 +26,10 @@ type branchState struct {
 	filter    string
 	filtering bool
 
+	// showRemote reflects git.show_remote_branches; the remote group is hidden
+	// from the list and from navigation when false.
+	showRemote bool
+
 	// commits holds the middle pane: the selected branch's own history.
 	commits        []git.Commit
 	graph          []git.GraphRow
@@ -95,6 +99,9 @@ func (b *branchState) rows() []branchRow {
 	for i, br := range g[0] {
 		rows = append(rows, branchRow{branch: br, group: 0, index: i})
 	}
+	if !b.showRemote {
+		return rows
+	}
 	rows = append(rows, branchRow{caption: "REMOTE"})
 	for i, br := range g[1] {
 		rows = append(rows, branchRow{branch: br, group: 1, index: i})
@@ -149,6 +156,7 @@ func (m *Model) openBranches() tea.Cmd {
 	if m.branches == nil {
 		m.branches = &branchState{}
 	}
+	m.branches.showRemote = m.showRemoteBranches()
 	m.screen = screenBranches
 	m.focus = 0
 	m.notice = ""
@@ -162,6 +170,7 @@ func (m *Model) loadBranches() tea.Cmd {
 	if m.branches == nil {
 		m.branches = &branchState{}
 	}
+	m.branches.showRemote = m.showRemoteBranches()
 	if m.branchCancel != nil {
 		m.branchCancel()
 	}
@@ -338,6 +347,9 @@ func (b *branchState) clampSelection() {
 		return
 	}
 	if b.group > 1 || b.group < 0 {
+		b.group = 0
+	}
+	if !b.showRemote && b.group == 1 {
 		b.group = 0
 	}
 	if len(g[b.group]) == 0 {

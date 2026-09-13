@@ -145,7 +145,7 @@ func TestHistoryInspectorAndCommitDiff(t *testing.T) {
 
 	// Opening a changed file shows that commit's patch, labelled as history.
 	drain(t, m, m.loadCommitFileDiff())
-	if !m.history.showDiff || len(m.history.diffLines) == 0 {
+	if !m.history.showDiff || len(m.history.view.patch.Files) == 0 || len(m.history.view.patch.Files[0].Hunks) == 0 {
 		t.Fatalf("commit diff not loaded: %s", m.history.err)
 	}
 	view = ansi.Strip(m.View())
@@ -156,7 +156,7 @@ func TestHistoryInspectorAndCommitDiff(t *testing.T) {
 		t.Fatal("commit diff does not distinguish itself from the working tree")
 	}
 	if !strings.Contains(view, "const limit") {
-		t.Fatalf("patch content missing: %v", m.history.diffLines)
+		t.Fatalf("patch content missing: %v", m.history.view.patch)
 	}
 	// Escape returns to the commit rather than leaving the screen.
 	key(t, m, "esc")

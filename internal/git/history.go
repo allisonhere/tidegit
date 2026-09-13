@@ -327,14 +327,23 @@ func parseNameStatus(raw string) (map[string]byte, error) {
 // CommitDiff returns the patch for one path in one commit, shaped exactly like
 // a working-tree Diff so the existing renderer can display it unchanged. Hunk
 // staging is never offered: a historical patch is not a working-tree target.
-func (r Repository) CommitDiff(ctx context.Context, c Commit, f FileChange) (Diff, error) {
+func (r Repository) CommitDiff(ctx context.Context, c Commit, f FileChange, contextLines ...int) (Diff, error) {
+	return r.CommitDiffWith(ctx, c, f, DiffOptions{Context: contextArg(contextLines)})
+}
+
+// CommitDiffWith renders one path's patch from a commit with explicit context
+// and whitespace options.
+func (r Repository) CommitDiffWith(ctx context.Context, c Commit, f FileChange, opts DiffOptions) (Diff, error) {
+	n := ContextLines(opts.Context)
 	paths := []string{f.Path}
 	if f.OriginalPath != "" {
 		paths = append(paths, f.OriginalPath)
 	}
-	patch, err := r.commitDiffArgs(ctx, c, []string{"--unified=3", "--src-prefix=a/", "--dst-prefix=b/",
+	flags := []string{"--unified=" + strconv.Itoa(n), "--src-prefix=a/", "--dst-prefix=b/",
 		"--no-relative", "--inter-hunk-context=0", "--output-indicator-new=+",
-		"--output-indicator-old=-", "--output-indicator-context= "}, paths)
+		"--output-indicator-old=-", "--output-indicator-context= "}
+	flags = append(flags, opts.Whitespace.Args()...)
+	patch, err := r.commitDiffArgs(ctx, c, flags, paths)
 	if err != nil {
 		return Diff{}, err
 	}
@@ -342,6 +351,8 @@ func (r Repository) CommitDiff(ctx context.Context, c Commit, f FileChange) (Dif
 		Patch:           patch,
 		File:            File{Path: f.Path, OriginalPath: f.OriginalPath},
 		Source:          Staged,
+		Context:         n,
+		Whitespace:      opts.Whitespace,
 		Commit:          c.Short,
 		HunkUnavailable: "Historical commit: staging actions apply to the working tree.",
 	}, nil

@@ -15,6 +15,8 @@ const (
 	paletteGoStatus paletteAction = iota
 	paletteGoHistory
 	paletteGoBranches
+	paletteGoStash
+	paletteGoRemotes
 	paletteCheckout
 	paletteCreateBranch
 	paletteRenameBranch
@@ -27,6 +29,58 @@ const (
 	paletteTheme
 	paletteFollowOmarchy
 	paletteHelp
+	paletteFetch
+	paletteFetchRemote
+	paletteFetchAll
+	palettePull
+	palettePush
+	palettePushSetUpstream
+	paletteStash
+	paletteStashMessage
+	paletteStashUntracked
+	paletteApplyStash
+	palettePopStash
+	paletteDropStash
+	paletteGoConflicts
+	paletteGoReflog
+	paletteNextConflict
+	palettePrevConflict
+	paletteAcceptOurs
+	paletteAcceptTheirs
+	paletteOpenEditor
+	paletteMarkResolved
+	paletteContinueOp
+	paletteSkipOp
+	paletteAbortOp
+	paletteRecoveryBranch
+	paletteRevertCommit
+	paletteReset
+	paletteUndoCommit
+	paletteRestoreFile
+	paletteRecoveryCenter
+	paletteSettings
+	paletteReloadConfig
+	paletteOpenConfig
+	paletteEffectiveConfig
+	paletteResetSettings
+	paletteStageAll
+	paletteUnstageAll
+	paletteClearMarks
+	paletteDiffToggleMode
+	paletteDiffNextHunk
+	paletteDiffPrevHunk
+	paletteDiffMoreContext
+	paletteDiffLessContext
+	paletteDiffFullContext
+	paletteDiffToggleSyntax
+	paletteDiffToggleWhitespace
+	paletteDiffCycleWhitespace
+	paletteDiffSearch
+	paletteDiffCopyHunk
+	paletteDiffCopyPath
+	paletteDiffOpenEditor
+	paletteDiffStage
+	paletteDiffUnstage
 )
 
 type paletteItem struct {
@@ -50,6 +104,62 @@ func paletteCommands() []paletteItem {
 		{title: "Go to Status", hint: "1", action: paletteGoStatus},
 		{title: "Go to History", hint: "2", action: paletteGoHistory},
 		{title: "Go to Branches", hint: "3", action: paletteGoBranches},
+		{title: "Go to Stashes", hint: "4", action: paletteGoStash},
+		{title: "Go to Remotes", hint: "5", action: paletteGoRemotes},
+		{title: "Go to Conflicts", hint: "6", action: paletteGoConflicts},
+		{title: "Go to Reflog", hint: "7", action: paletteGoReflog},
+		{title: "Next conflict", hint: "Conflicts · ]", action: paletteNextConflict, screens: []screen{screenConflicts}},
+		{title: "Previous conflict", hint: "Conflicts · [", action: palettePrevConflict, screens: []screen{screenConflicts}},
+		{title: "Accept ours", hint: "Conflicts · o", action: paletteAcceptOurs, screens: []screen{screenConflicts}},
+		{title: "Accept theirs", hint: "Conflicts · t", action: paletteAcceptTheirs, screens: []screen{screenConflicts}},
+		{title: "Open conflict in editor", hint: "Conflicts · e", action: paletteOpenEditor, screens: []screen{screenConflicts}},
+		{title: "Mark resolved", hint: "Conflicts · m", action: paletteMarkResolved, screens: []screen{screenConflicts}},
+		{title: "Continue operation", hint: "Conflicts · c", action: paletteContinueOp},
+		{title: "Skip operation", hint: "Conflicts · x", action: paletteSkipOp},
+		{title: "Abort operation", hint: "Conflicts · A", action: paletteAbortOp},
+		{title: "Create recovery branch", hint: "Reflog · b", action: paletteRecoveryBranch, screens: []screen{screenReflog}},
+		{title: "Revert commit", hint: "History · R", action: paletteRevertCommit, screens: []screen{screenHistory}},
+		{title: "Reset…", hint: "soft / mixed / hard", action: paletteReset},
+		{title: "Undo last commit", hint: "keep staged or unstaged", action: paletteUndoCommit},
+		{title: "Restore file…", hint: "Status restore options", action: paletteRestoreFile, screens: []screen{screenStatus}},
+		{title: "Recovery…", hint: "safety actions", action: paletteRecoveryCenter},
+		{title: "Open Settings", hint: "8", action: paletteSettings},
+		{title: "Reload configuration", hint: "Settings · L", action: paletteReloadConfig},
+		{title: "Open config in editor", hint: "Settings · E", action: paletteOpenConfig},
+		{title: "Show effective configuration", hint: "Settings · V", action: paletteEffectiveConfig},
+		{title: "Reset all in-app settings", hint: "confirms", action: paletteResetSettings},
+		{title: "Stage all in section", hint: "Status · multi-select", action: paletteStageAll, screens: []screen{screenStatus}},
+		{title: "Unstage all in section", hint: "Status · multi-select", action: paletteUnstageAll, screens: []screen{screenStatus}},
+		{title: "Clear marks", hint: "Status · Space", action: paletteClearMarks, screens: []screen{screenStatus}},
+		{title: "Toggle unified / split diff", hint: "v", action: paletteDiffToggleMode},
+		{title: "Next hunk", hint: "]", action: paletteDiffNextHunk},
+		{title: "Previous hunk", hint: "[", action: paletteDiffPrevHunk},
+		{title: "Increase diff context", hint: "fewer than full", action: paletteDiffMoreContext},
+		{title: "Decrease diff context", hint: "", action: paletteDiffLessContext},
+		{title: "Show full diff context", hint: "50 lines", action: paletteDiffFullContext},
+		{title: "Toggle syntax highlighting", hint: "diff.syntax", action: paletteDiffToggleSyntax},
+		{title: "Toggle whitespace markers", hint: "diff.show_whitespace", action: paletteDiffToggleWhitespace},
+		{title: "Cycle ignore-whitespace mode", hint: "diff.whitespace", action: paletteDiffCycleWhitespace},
+		{title: "Search diff", hint: "Ctrl-F", action: paletteDiffSearch},
+		{title: "Copy hunk", hint: "selected hunk as a patch", action: paletteDiffCopyHunk},
+		{title: "Copy file path", hint: "diff file", action: paletteDiffCopyPath},
+		{title: "Open file at line in editor", hint: "e", action: paletteDiffOpenEditor},
+		{title: "Stage hunk", hint: "Status · S", action: paletteDiffStage, screens: []screen{screenStatus}},
+		{title: "Unstage hunk", hint: "Status · U", action: paletteDiffUnstage, screens: []screen{screenStatus}},
+		{title: "Fetch", hint: "f", action: paletteFetch},
+		{title: "Fetch remote…", hint: "choose a remote", action: paletteFetchRemote},
+		{title: "Fetch all remotes", hint: "F", action: paletteFetchAll},
+		{title: "Pull", hint: "p", action: palettePull},
+		{title: "Push", hint: "P", action: palettePush},
+		{title: "Push and set upstream", hint: "first push", action: palettePushSetUpstream},
+		{title: "View remotes", hint: "5", action: paletteGoRemotes},
+		{title: "Stash changes", hint: "tracked changes", action: paletteStash},
+		{title: "Stash with message", hint: "optional name", action: paletteStashMessage},
+		{title: "Stash including untracked", hint: "adds -u", action: paletteStashUntracked},
+		{title: "View stashes", hint: "4", action: paletteGoStash},
+		{title: "Apply stash", hint: "Stash · a", action: paletteApplyStash, screens: []screen{screenStash}},
+		{title: "Pop stash", hint: "Stash · p", action: palettePopStash, screens: []screen{screenStash}},
+		{title: "Drop stash", hint: "Stash · d", action: paletteDropStash, screens: []screen{screenStash}},
 		{title: "Checkout branch", hint: "Branches · Enter", action: paletteCheckout, screens: []screen{screenBranches}},
 		{title: "Create branch here", hint: "n", action: paletteCreateBranch},
 		{title: "Rename branch", hint: "Branches · R", action: paletteRenameBranch, screens: []screen{screenBranches}},
@@ -164,6 +274,118 @@ func (m *Model) runPalette(action paletteAction) tea.Cmd {
 		return m.goToScreen(screenHistory)
 	case paletteGoBranches:
 		return m.goToScreen(screenBranches)
+	case paletteGoStash:
+		return m.goToScreen(screenStash)
+	case paletteGoRemotes:
+		return m.goToScreen(screenRemotes)
+	case paletteGoConflicts:
+		return m.goToScreen(screenConflicts)
+	case paletteGoReflog:
+		return m.goToScreen(screenReflog)
+	case paletteNextConflict:
+		return m.moveRegion(1)
+	case palettePrevConflict:
+		return m.moveRegion(-1)
+	case paletteAcceptOurs:
+		return m.resolveSelected(true, false)
+	case paletteAcceptTheirs:
+		return m.resolveSelected(false, false)
+	case paletteOpenEditor:
+		return m.openConflictInEditor()
+	case paletteMarkResolved:
+		return m.markSelectedResolved()
+	case paletteContinueOp:
+		return m.continueOperation()
+	case paletteSkipOp:
+		return m.skipOperation()
+	case paletteAbortOp:
+		return m.confirmAbortOperation()
+	case paletteRecoveryBranch:
+		return m.promptRecoveryBranch()
+	case paletteRevertCommit:
+		return m.confirmRevertCommit()
+	case paletteReset:
+		return m.paletteReset()
+	case paletteUndoCommit:
+		return m.promptUndoLastCommit()
+	case paletteRestoreFile:
+		return m.promptStatusRestore()
+	case paletteRecoveryCenter:
+		return m.openRecoveryCenter()
+	case paletteSettings:
+		return m.goToScreen(screenSettings)
+	case paletteReloadConfig:
+		return m.reloadConfiguration()
+	case paletteOpenConfig:
+		return m.openConfigInEditor()
+	case paletteEffectiveConfig:
+		return m.showEffectiveConfig()
+	case paletteResetSettings:
+		return m.confirmResetSettings()
+	case paletteStageAll:
+		return m.stageAllInSection()
+	case paletteUnstageAll:
+		return m.unstageAllInSection()
+	case paletteClearMarks:
+		m.clearSectionMarks(m.section)
+		m.notice = "Cleared marks"
+		return nil
+	case paletteDiffToggleMode:
+		return m.toggleDiffMode()
+	case paletteDiffNextHunk:
+		m.moveHunk(1)
+		return nil
+	case paletteDiffPrevHunk:
+		m.moveHunk(-1)
+		return nil
+	case paletteDiffMoreContext:
+		return m.adjustDiffContext(1)
+	case paletteDiffLessContext:
+		return m.adjustDiffContext(-1)
+	case paletteDiffFullContext:
+		return m.setDiffContext(50)
+	case paletteDiffToggleSyntax:
+		return m.toggleDiffSetting("diff.syntax")
+	case paletteDiffToggleWhitespace:
+		return m.toggleDiffSetting("diff.show_whitespace")
+	case paletteDiffCycleWhitespace:
+		return m.cycleWhitespaceMode()
+	case paletteDiffSearch:
+		return m.startDiffSearch()
+	case paletteDiffCopyHunk:
+		return m.copyDiffHunk()
+	case paletteDiffCopyPath:
+		return m.copyDiffPath()
+	case paletteDiffOpenEditor:
+		return m.openDiffInEditor()
+	case paletteDiffStage:
+		return m.act(StageHunk)
+	case paletteDiffUnstage:
+		return m.act(UnstageHunk)
+	case paletteFetch:
+		return m.fetchDefault()
+	case paletteFetchRemote:
+		return m.chooseFetchRemote()
+	case paletteFetchAll:
+		return m.fetchAll()
+	case palettePull:
+		return m.pullCurrent()
+	case palettePush:
+		return m.pushCurrent(false)
+	case palettePushSetUpstream:
+		return m.pushCurrent(true)
+	case paletteStash:
+		return m.stashChanges("", false)
+	case paletteStashMessage:
+		return m.promptStash(false)
+	case paletteStashUntracked:
+		return m.promptStash(true)
+	case paletteApplyStash:
+		return m.applyStash()
+	case palettePopStash:
+		return m.popStash()
+	case paletteDropStash:
+		return m.confirmDropStash()
 	case paletteRefresh:
 		return m.refreshScreen()
 	case paletteTheme:

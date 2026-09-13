@@ -19,6 +19,7 @@ type Hunk struct {
 	Body                                   []string
 	OldStart, OldCount, NewStart, NewCount int
 	PatchLine                              int // navigation hint only, never used to identify a staging target
+	Context                                int // context the hunk was generated with, for faithful re-validation
 }
 
 var hunkHeader = regexp.MustCompile(`^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@`)
@@ -71,7 +72,7 @@ func parseHunks(d Diff) ([]Hunk, string) {
 			x, _ := strconv.Atoi(v)
 			return x
 		}
-		h := Hunk{File: d.File, Source: d.Source, OldPath: oldPath, NewPath: newPath, FileHeader: header, Header: line, OldStart: n(m[1], 0), OldCount: n(m[2], 1), NewStart: n(m[3], 0), NewCount: n(m[4], 1), PatchLine: i}
+		h := Hunk{File: d.File, Source: d.Source, OldPath: oldPath, NewPath: newPath, FileHeader: header, Header: line, OldStart: n(m[1], 0), OldCount: n(m[2], 1), NewStart: n(m[3], 0), NewCount: n(m[4], 1), PatchLine: i, Context: d.Context}
 		i++
 		old, newCount := 0, 0
 		for i < len(lines) && !strings.HasPrefix(lines[i], "@@ ") && !strings.HasPrefix(lines[i], "diff --git ") {

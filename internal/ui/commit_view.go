@@ -116,14 +116,7 @@ func (m *Model) commitView(r tideui.Renderer) string {
 			if c.previewLoading {
 				summary += muted(r, "Reading staged diff…")
 			} else {
-				start := 0
-				for i, line := range c.preview {
-					if line.kind == '@' {
-						start = i
-						break
-					}
-				}
-				summary += renderDiff(c.preview, r, start, 0, visible, width-4, -1)
+				summary += m.renderDiffView(&c.view, r, width-4, visible, false)
 			}
 		}
 		right := frameContent(r, inset(summary, width-2), width, m.height-4, c.focus == 1)

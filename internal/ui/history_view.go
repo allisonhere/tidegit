@@ -107,7 +107,7 @@ func (m *Model) historyStatus(r tideui.Renderer) string {
 		return fmt.Sprintf("Filtering subjects by %q · %d shown", h.search, len(h.commits))
 	}
 	if c, ok := h.current(); ok {
-		age := relativeTime(c.AuthorTime, time.Now())
+		age := m.timeAgo(c.AuthorTime)
 		return fmt.Sprintf("%s · %s · %s ago · %s", c.Short, safeText(c.Author), age,
 			c.AuthorTime.Format("2006-01-02 15:04"))
 	}
@@ -252,7 +252,7 @@ func (m *Model) commitRow(r tideui.Renderer, index, width, graphW int, now time.
 		right += meta.Render(fmt.Sprintf("%-3s", authorInitials(c.Author)))
 	}
 	if cols.age {
-		right += meta.Render(fmt.Sprintf("%4s", relativeTime(c.AuthorTime, now)))
+		right += meta.Render(fmt.Sprintf("%4s", m.timeAgo(c.AuthorTime)))
 	}
 	hash := ""
 	if cols.hash {
@@ -438,11 +438,10 @@ func (m *Model) commitDiffPane(r tideui.Renderer, width, height int) string {
 	if h.diffLoading {
 		return header + " " + muted(r, m.activity()+" Reading patch…")
 	}
-	if len(h.diffLines) == 0 {
+	if len(h.view.patch.Files) == 0 || len(h.view.patch.Files[0].Hunks) == 0 {
 		return header + " " + muted(r, "No textual changes to preview.")
 	}
-	h.diffScroll.ClampTo(len(h.diffLines), max(1, height-3))
-	return header + renderDiff(h.diffLines, r, h.diffScroll.Offset(), h.diffAcross, max(1, height-3), width, -1)
+	return header + m.renderDiffView(&h.view, r, width, max(1, height-3), m.focus == 2)
 }
 
 // messageBody returns the commit message without its subject line.

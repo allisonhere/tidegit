@@ -21,6 +21,16 @@ func (m *Model) View() string {
 		return m.historyView(r)
 	case screenBranches:
 		return m.branchesView(r)
+	case screenStash:
+		return m.stashView(r)
+	case screenRemotes:
+		return m.remotesView(r)
+	case screenConflicts:
+		return m.conflictsView(r)
+	case screenReflog:
+		return m.reflogView(r)
+	case screenSettings:
+		return m.settingsView(r)
 	}
 	return m.statusView(r)
 }
@@ -47,13 +57,32 @@ func (m *Model) statusView(r tideui.Renderer) string {
 	if m.status.OID == "(initial)" {
 		side += "\n\n" + muted(r, "First commit awaits")
 	}
+	// A paused operation is a first-class fact, not a footer: the Status screen
+	// says what is running and how much is unsettled before anything else.
+	if m.repoState.InProgress() {
+		label := strings.ToUpper(m.repoState.Operation.Label())
+		if m.repoState.Operation == git.OpRebase && m.repoState.Total > 0 {
+			label = fmt.Sprintf("REBASE %d/%d", m.repoState.Step, m.repoState.Total)
+		}
+		side += "\n\n" + muted(r, "OPERATION") + "\n"
+		side += r.Styles.DetailBody.Foreground(r.Styles.Theme.Unread).Bold(true).Render(label) + "\n"
+		if m.repoState.Conflicts > 0 {
+			side += muted(r, fmt.Sprintf("%d unresolved · press 6", m.repoState.Conflicts))
+		} else {
+			side += muted(r, "ready to continue · press 6")
+		}
+	}
 	files := m.files()
 	rows := []string{""}
 	start := max(0, m.selected-height+3)
 	for i := start; i < min(len(files), start+height-2); i++ {
 		f := files[i]
 		name := safeText(f.Path)
-		rows = append(rows, r.RenderRow(tideui.Row{Text: name, Suffix: fileMark(f, m.section), Selected: i == m.selected}, max(1, w[1]-2)))
+		prefix := "  "
+		if m.isMarked(m.section, f.Path) {
+			prefix = "✓ "
+		}
+		rows = append(rows, r.RenderRow(tideui.Row{Prefix: prefix, Text: name, Suffix: fileMark(f, m.section), Selected: i == m.selected}, max(1, w[1]-2)))
 	}
 	if len(files) == 0 {
 		rows = []string{"", accent(r, emptyTitle(m.section)), "", muted(r, "Choose another section"), muted(r, "to inspect its changes.")}
@@ -63,13 +92,16 @@ func (m *Model) statusView(r tideui.Renderer) string {
 	preview := ""
 	if len(files) > 0 {
 		f := files[m.selected]
-		active := -1
-		if len(m.diff.Hunks) > 0 {
-			active = m.diff.Hunks[m.hunk].PatchLine
-			hint = fmt.Sprintf("Hunk %d/%d", m.hunk+1, len(m.diff.Hunks))
+		if hunks := m.view.hunkCount(); hunks > 0 {
+			hint = fmt.Sprintf("Hunk %d/%d", min(m.view.hunk+1, hunks), hunks)
+			if m.view.search != "" {
+				hint += " · /" + m.view.search
+			}
+		} else {
+			hint = m.view.label
 		}
-		preview = " " + accent(r, clip(safeText(f.Path), w[2]-2)) + "\n " + muted(r, fileState(f, m.section)+" · "+strings.ToLower(git.SectionNames[m.section])) + "\n\n"
-		preview += renderDiff(m.lines, r, m.scroll.Offset(), m.horizontal, max(1, height-3), w[2], active)
+		preview = " " + accent(r, clip(safeText(f.Path), w[2]-2)) + "\n " + muted(r, m.view.label+" · "+fileState(f, m.section)+" · "+strings.ToLower(git.SectionNames[m.section])) + "\n\n"
+		preview += m.renderDiffView(&m.view, r, w[2], max(1, height-3), m.focus == 2)
 		if m.diff.Patch == "" && !m.diffLoading && !m.loading {
 			preview += "\n " + muted(r, "No textual changes to preview.")
 		}
@@ -102,7 +134,7 @@ func (m *Model) statusView(r tideui.Renderer) string {
 	}
 	layout := tideui.Layout{Width: m.width, Height: m.height - 3, Mode: tideui.ThreeColumn, ColumnRatios: [3]float64{2, 3, 5}, Panes: [3]tideui.Pane{
 		{Title: "STATUS", Hint: "01", Content: inset("\n"+side, w[0]), Focused: m.focus == 0},
-		{Title: "CHANGES", Hint: fmt.Sprint(len(files)), Content: inset(strings.Join(rows, "\n"), w[1]), Focused: m.focus == 1},
+		{Title: "CHANGES", Hint: changesHint(len(files), m.markedCount(m.section)), Content: inset(strings.Join(rows, "\n"), w[1]), Focused: m.focus == 1},
 		{Title: title, Hint: hint, Content: preview, Focused: m.focus == 2},
 	}, Status: &tideui.StatusBar{Left: clip(safeText(state), m.width-3)}}
 	if tabbed {
@@ -122,10 +154,23 @@ func (m *Model) withOverlays(r tideui.Renderer, base string) string {
 		return r.OverlayModal(base, m.palettePanel(r), m.width, m.height)
 	case m.prompt != nil:
 		return r.OverlayModal(base, m.promptPanel(r), m.width, m.height)
+	case m.choice != nil:
+		return r.OverlayModal(base, m.choicePanel(r), m.width, m.height)
 	case m.confirm != nil:
 		return r.OverlayModal(base, m.confirmPanel(r), m.width, m.height)
+	case m.op != nil && m.op.show:
+		return r.OverlayModal(base, m.operationPanel(r), m.width, m.height)
+	case m.settings != nil && m.settings.effective:
+		return r.OverlayModal(base, m.effectivePanel(r), m.width, m.height)
 	case m.help:
-		return r.OverlayModal(base, m.helpPanel(r).Content, m.width, m.height)
+		// The keyboard guide is tall enough that its drop shadow can fall
+		// across a styled run in whatever screen is behind it, and the
+		// toolkit's box cut then drops that run's background for a cell or
+		// two. Help is composited without a shadow so no base cell is left
+		// unbacked; the panel chrome itself is unchanged.
+		plain := tideui.NewRenderer(m.activeTheme(), tideui.StyleOptions{
+			Density: tideui.Compact, PaneCorners: tideui.RoundCorners, ModalShadow: false})
+		return plain.OverlayModal(base, m.helpPanel(r).Content, m.width, m.height)
 	}
 	return base
 }
@@ -141,6 +186,15 @@ func (m *Model) cleanContext() string {
 func emptyTitle(section int) string {
 	return [4]string{"Nothing staged", "No unstaged changes", "No untracked files", "No conflicts"}[section]
 }
+
+// changesHint shows the section size and, when a multi-select is active, how
+// many files are marked.
+func changesHint(total, marked int) string {
+	if marked > 0 {
+		return fmt.Sprintf("%d · %d marked", total, marked)
+	}
+	return fmt.Sprint(total)
+}
 func (m *Model) statusHints(r tideui.Renderer) string {
 	action := tideui.SoftHint{Key: "s", Label: "stage file"}
 	if m.section == int(git.Staged) {
@@ -150,7 +204,10 @@ func (m *Model) statusHints(r tideui.Renderer) string {
 		action.Key = strings.ToUpper(action.Key)
 		action.Label = strings.Replace(action.Label, "file", "hunk", 1)
 	}
-	hints := []tideui.SoftHint{action, {Key: "c", Label: "commit"}, {Key: "Tab", Label: "panes"}, {Key: "?", Label: "help"}}
+	hints := []tideui.SoftHint{action, {Key: "space", Label: "mark"}, {Key: "c", Label: "commit"}, {Key: "Tab", Label: "panes"}, {Key: "?", Label: "help"}}
+	if m.repoState.Conflicts > 0 {
+		hints = append([]tideui.SoftHint{{Key: "6", Label: "resolve conflicts"}}, hints...)
+	}
 	if m.filtering || m.query != "" {
 		return m.hintBar(r, tideui.SoftHint{Key: "/", Label: safeText(m.query)}, tideui.SoftHint{Key: "Enter", Label: "keep"}, tideui.SoftHint{Key: "Esc", Label: "clear"})
 	}

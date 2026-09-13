@@ -17,6 +17,9 @@ const (
 	promptCreateBranch promptKind = iota
 	promptRenameBranch
 	promptJumpToRef
+	promptStashMessage
+	promptSettingText
+	promptDiffSearch
 )
 
 // promptState is a single-line text field shown in a soft panel. Ripple owns
@@ -36,6 +39,7 @@ type confirmKind int
 const (
 	confirmDeleteBranch confirmKind = iota
 	confirmForceDeleteBranch
+	confirmDropStash
 )
 
 // confirmState is a yes/no question. accept is the single key that agrees, so
@@ -46,6 +50,10 @@ type confirmState struct {
 	danger      bool
 	kind        confirmKind
 	target      string
+	// run is an optional action taken when the accept key is pressed. It lets a
+	// destructive confirmation carry its own closure instead of growing the
+	// kind enum for every new recovery action.
+	run func() tea.Cmd
 }
 
 func (m *Model) updatePromptKey(key string, msg tea.KeyMsg) tea.Cmd {
@@ -79,11 +87,29 @@ func (m *Model) updatePromptKey(key string, msg tea.KeyMsg) tea.Cmd {
 func (m *Model) submitPrompt(alsoSwitch bool) tea.Cmd {
 	p := m.prompt
 	value := strings.TrimSpace(p.value)
-	if value == "" {
+	// The stash prompt is the one place an empty value is a valid submission:
+	// a stash message is optional.
+	if value == "" && p.kind != promptStashMessage && p.kind != promptSettingText && p.kind != promptDiffSearch {
 		p.err = "Enter a name."
 		return nil
 	}
 	switch p.kind {
+	case promptDiffSearch:
+		raw := p.value
+		m.prompt = nil
+		return m.submitDiffSearch(strings.TrimSpace(raw))
+	case promptSettingText:
+		path := p.context
+		raw := p.value
+		m.prompt = nil
+		if path == "editor.external_editor" {
+			return m.setSetting(path, strings.TrimSpace(raw))
+		}
+		return m.setSetting(path, value)
+	case promptStashMessage:
+		includeUntracked := p.context == "untracked"
+		m.prompt = nil
+		return m.stashChanges(value, includeUntracked)
 	case promptCreateBranch:
 		name, start := value, p.context
 		m.prompt = nil
@@ -123,13 +149,18 @@ func (m *Model) updateConfirmKey(key string) tea.Cmd {
 		m.confirm = nil
 		return nil
 	case c.accept:
-		kind, target := c.kind, c.target
+		kind, target, run := c.kind, c.target, c.run
 		m.confirm = nil
+		if run != nil {
+			return run()
+		}
 		switch kind {
 		case confirmDeleteBranch:
 			return m.deleteBranch(target, false)
 		case confirmForceDeleteBranch:
 			return m.deleteBranch(target, true)
+		case confirmDropStash:
+			return m.dropStash(target)
 		}
 	}
 	return nil
@@ -179,13 +210,13 @@ func (m *Model) confirmPanel(r tideui.Renderer) string {
 	var lines []string
 	for _, line := range strings.Split(c.body, "\n") {
 		style := r.Styles.DetailBody
-		if c.danger && strings.Contains(line, "NOT merged") {
+		if c.danger && (strings.Contains(line, "NOT merged") || strings.Contains(line, "cannot be undone")) {
 			style = style.Foreground(r.Styles.Theme.Error).Bold(true)
 		}
 		lines = append(lines, style.Render(clip(line, inner)))
 	}
 	body := strings.Join(lines, "\n") + "\n\n" +
-		accent(r, c.accept+"  confirm") + "\n" + muted(r, "Esc / n  keep the branch")
+		accent(r, c.accept+"  confirm") + "\n" + muted(r, "Esc / n  cancel")
 	panel := r.SoftPanelOverlay(tideui.SoftPanel{Prefix: "tidegit", Title: c.title,
 		Width: width, Content: inset(body, width)})
 	return panel.Content

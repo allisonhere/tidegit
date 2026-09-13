@@ -1,7 +1,7 @@
 # TideGit
 
 A calm, keyboard-first terminal Git client built with TideUI.
-**Milestone 7: configuration, persistent state and an in-app Settings screen.**
+**Milestone 8: a first-class diff viewer.**
 
 ![The History screen: ref filters, the commit graph with each branch in its own
 colour, and a commit's patch in the inspector](images/screen1.png)
@@ -22,13 +22,56 @@ with a path; the recent-repository picker belongs to a later milestone.
 
 The Status screen groups staged, unstaged, untracked and conflicted files. A file
 with both index and working-tree changes appears in both appropriate groups.
-The right pane previews the selected state, including unified diff line numbers,
-Git's hunk/function headers, binary notices, renames, deletions and combined
-conflict diffs. Conflict diffs intentionally retain Git's multi-parent columns.
+The right pane previews the selected state through the shared diff viewer below.
 Stage or unstage complete files or individual text hunks. Working-tree content
-is preserved by all staging actions. A whole-file operation follows the selected
+is preserved by all staging actions. Mark several files with `Space` and `s`/`u`
+act on the whole set at once; the command palette can also stage or unstage an
+entire section. A whole-file operation follows the selected
 path into its destination group; a hunk operation stays with the remaining hunks
 in the current group when possible.
+
+## Diff viewer
+
+Every diff in TideGit — the working tree, staged content, a commit, a stash, a
+reflog entry, or a conflict comparison — comes from one parsed model and one
+renderer, so the behaviour is the same everywhere.
+
+**Unified and side-by-side.** Press `v` to switch between one column and an
+aligned old/new split. Split falls back to unified when the terminal is too
+narrow to read. The choice is a global setting (`diff.mode`), not per-screen.
+
+**A real gutter, not raw text.** Old and new line numbers sit in a dimmed
+gutter, with `+`/`-`/space markers so the change kind never depends on colour.
+The selected line is marked with `>` as well as a background, and the current
+hunk's header is highlighted.
+
+**Syntax and word highlighting.** Source code is coloured by file extension
+using a small built-in tokenizer (Go, Rust, Python, JS/TS, JSON, C-family,
+shell, TOML, YAML, SQL), layered under the `+`/`-` semantics so additions and
+deletions stay obvious. Within a replaced line the words that actually changed
+are emphasised. Both are disabled automatically for very large diffs, with a
+note saying so.
+
+**Whitespace.** `diff.show_whitespace` marks spaces and tabs and highlights
+trailing whitespace distinctly. `diff.whitespace` uses Git's own
+`--ignore-space-at-eol`, `--ignore-space-change` or `--ignore-all-space` rather
+than post-processing the output; an active non-default mode is named in the
+status line.
+
+**Navigation.** `[` / `]` move between hunks, `j` / `k` move the selected line,
+`Enter` expands or collapses a long run of unchanged context (shown as
+`⋯ 42 unchanged lines`), and `Ctrl-F` searches the diff with `n` / `N` to step
+matches. Search is over the visible diff text and stays responsive on large
+diffs.
+
+**Actions.** `y` copies the selected line, `e` opens the file at that line in
+your editor, and `S` / `U` stage or unstage the selected hunk through the same
+staging service the rest of the app uses. The command palette adds copy-hunk,
+copy-path, context size, whitespace mode, syntax toggle and more.
+
+**Large diffs.** Only the visible window is rendered; syntax and word analysis
+are skipped past a threshold; stale loads are cancelled and ignored; and a
+truncated preview says so instead of silently cutting the text.
 
 TideGit has eight screens: **Status** (`1`), **History** (`2`), **Branches**
 (`3`), **Stash** (`4`), **Remotes** (`5`), **Conflicts** (`6`), **Reflog** (`7`)
@@ -67,7 +110,8 @@ between review and submission, the commit is refused until you refresh with
 | PageUp / PageDown, Home / End | Page or jump within the focused pane |
 | Enter | Focus next pane |
 | / | Filter the current file section; Enter keeps, Escape clears |
-| s / u | Stage / unstage the selected **file** |
+| Space | Mark/unmark the selected file |
+| s / u | Stage / unstage marked files, or the selected **file** |
 | S / U | Stage / unstage the selected **hunk** |
 | [ / ] | Previous / next hunk; the active header is marked `>` |
 | c / A | Compose a commit / amend HEAD |
@@ -574,6 +618,15 @@ UI tests cover the Settings screen, search, toggles, enum and integer controls,
 changed indicators, reset and reset-all, keybinding capture, the effective
 configuration view, an invalid config recovering after a fix, and rendering at
 eight sizes.
+Diff tests cover parsing additions, deletions, context, multiple hunks,
+renames, copies, new and deleted files, no-newline markers, quoted paths with
+spaces, Unicode, binary files, and line numbers; side-by-side alignment for
+pure insertion, pure deletion, replacement and context; word-level spans for
+changed, inserted, deleted, punctuation and Unicode tokens; context collapse
+and expansion; and syntax tokenization. UI tests cover hunk navigation, split
+mode, search, collapse, whitespace and context settings, hunk staging through
+the viewer, and a 30,000-line diff staying windowed with highlighting disabled.
+Git tests verify the whitespace modes reach Git as its own options.
 
 ## Scope and limits
 
@@ -584,10 +637,20 @@ inspection, side selection, keep-both, external editing, mark-resolved and
 continue/skip/abort for merge, rebase, cherry-pick and revert. Reset (soft,
 mixed, hard), revert of a normal commit, file restore from the working tree, HEAD
 or a commit, undo-last-commit, and reflog browsing and recovery are implemented.
-AI conflict resolution, a full interactive rebase editor, commit squashing and
-reordering, worktree and submodule management, forge integration, the repository
-picker, clone, AI providers, a plugin system and config watching are not
-implemented. Milestone 8 has not started.
+The diff viewer covers unified and side-by-side modes, syntax and word
+highlighting, context collapse, whitespace visualization and Git-native
+ignore-whitespace modes, search, copy, editor-at-line, hunk navigation and hunk
+staging. AI conflict resolution, a full interactive rebase editor, commit
+squashing and reordering, worktree and submodule management, forge integration,
+the repository picker, clone, AI providers, a plugin system and config watching
+are not implemented. Milestone 9 has not started.
+
+Syntax highlighting is single-line: a block comment spanning several lines is
+not tracked across them. Line-range selection and line-level staging are not
+exposed yet, though the viewer keeps a selected line and a current hunk so they
+can be added. Side-by-side alignment is line-based, not a diff algorithm of its
+own, so a heavily reshuffled file can pair lines imperfectly. Image previews
+and binary rendering beyond a labelled notice are out of scope.
 
 Configuration hot reload is explicit (`L`) rather than a filesystem watcher, so
 editors writing temporary files cannot cause repeated reloads. Per-repository
@@ -652,7 +715,8 @@ seams, and the validation records for what was checked and how:
 [Milestone 4](docs/milestone-4-validation.md),
 [Milestone 5](docs/milestone-5-validation.md),
 [Milestone 6](docs/milestone-6-validation.md),
-[Milestone 7](docs/milestone-7-validation.md).
+[Milestone 7](docs/milestone-7-validation.md),
+[Milestone 8](docs/milestone-8-validation.md).
 
 ---
 

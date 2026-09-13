@@ -1,0 +1,66 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build & Release
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Get version
+        id: version
+        env:
+          TAG: ${{ github.ref_name }}
+        run: echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Test
+        run: go test ./...
+
+      - name: Build binaries
+        run: |
+          mkdir -p dist
+          targets=(
+            "linux   amd64 tidegit-linux-x86_64"
+            "linux   arm64 tidegit-linux-aarch64"
+            "darwin  amd64 tidegit-darwin-x86_64"
+            "darwin  arm64 tidegit-darwin-aarch64"
+          )
+          for entry in "${targets[@]}"; do
+            read -r goos goarch name <<< "$entry"
+            CGO_ENABLED=0 GOOS=$goos GOARCH=$goarch go build \
+              -ldflags="-s -w -X main.version=${{ steps.version.outputs.tag }}" \
+              -o "dist/$name" \
+              ./cmd/tidegit
+            tar -czf "dist/$name.tar.gz" -C dist "$name"
+            rm "dist/$name"
+            echo "Built dist/$name.tar.gz"
+          done
+
+      - name: Generate checksums
+        working-directory: dist
+        run: sha256sum *.tar.gz > checksums.txt
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          name: "TideGit ${{ steps.version.outputs.tag }}"
+          generate_release_notes: true
+          files: |
+            dist/*.tar.gz
+            dist/checksums.txt

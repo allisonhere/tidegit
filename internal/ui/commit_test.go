@@ -167,12 +167,19 @@ func TestGitOutputPanelAndStagedReview(t *testing.T) {
 	if m.compose.focus != 1 {
 		t.Fatal("tab did not reach the staged review")
 	}
-	first := m.compose.preview
+	firstPath := ""
+	if len(m.compose.view.patch.Files) > 0 {
+		firstPath = m.compose.view.patch.Files[0].Display()
+	}
 	key(t, m, "j")
 	if m.compose.selected != 1 {
 		t.Fatal("review selection stuck")
 	}
-	if len(first) > 0 && len(m.compose.preview) > 0 && first[0] == m.compose.preview[0] {
+	nextPath := ""
+	if len(m.compose.view.patch.Files) > 0 {
+		nextPath = m.compose.view.patch.Files[0].Display()
+	}
+	if firstPath != "" && nextPath != "" && firstPath == nextPath {
 		t.Fatal("preview did not follow the selection")
 	}
 	if !strings.Contains(ansi.Strip(m.View()), "STAGED PREVIEW") {

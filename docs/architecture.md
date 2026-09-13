@@ -68,6 +68,11 @@ No built-in Shift-Space binding was found; `z` provides discoverable expansion.
 - `internal/ui/settings.go` / `settings_view.go`: the Settings screen. It reads
   the setting catalog and resolved values; it never parses TOML itself.
 - `internal/ui/keys.go`: the stable action catalog and the customizable keymap.
+- `internal/diff`: the shared parsed diff model, side-by-side alignment,
+  word-level spans, context collapse and the syntax tokenizer. No Git and no
+  terminal imports.
+- `internal/ui/diffview.go` / `diff_actions.go`: the one viewer every diff pane
+  renders through, plus its search, copy and editor actions.
 
 Git runs through argument arrays, never a shell. Pathspecs are literal and
 separated with `--`. Status uses `--porcelain=v2 --branch -z` and retains paths
@@ -453,6 +458,42 @@ Persistent state is its own versioned file. It carries the last repository, a
 bounded recent list, the last screen and dismissed hints, and corruption falls
 back to a fresh state rather than blocking startup. Configuration reset clears
 only `overrides.toml`; it never touches state.
+
+## Diff viewer (Milestone 8)
+
+`internal/diff` is the single parsed model. `Parse` turns raw unified patch
+text into files, hunks and semantically typed lines (context, addition,
+deletion, hunk header, meta, no-newline) with old/new line numbers, rename and
+copy metadata, binary state, modes, similarity and no-newline markers. It
+imports neither `internal/git` nor any terminal library: the Git layer produces
+the patch and the viewer renders the model. Every diff context — working tree,
+staged, commit, stash, reflog, and the conflict stage comparisons — parses and
+renders through it, so there is one system rather than one per screen.
+
+Word-level changes are computed during parsing: a maximal run of deletions
+followed by a run of additions is paired line by line, tokenized, and diffed
+with an LCS capped at a few hundred tokens to stay linear-ish. The result is a
+list of changed rune spans per line, which the renderer emphasises with
+bold+underline rather than colour alone. Side-by-side alignment pairs those same
+blocks, putting context on both sides and leaving a blank placeholder where one
+side has no line. Context collapse reduces long unchanged runs to a
+`⋯ N unchanged lines` marker keyed by run start, so expansion is local and
+survives navigation.
+
+Syntax highlighting is a small single-line tokenizer selected by extension; it
+returns token classes, never colours, so the viewer maps them to theme tokens
+and keeps highlighting secondary to `+`/`-`. It is deliberately not an AST:
+block comments do not carry across lines, which is the right trade for a
+viewport that renders lines independently.
+
+The viewer keeps one `diffView` of state (selected line, current hunk,
+collapsed gaps, search, scroll) and renders only the visible window; syntax and
+word spans are computed for visible lines only. Past a line threshold both are
+disabled with an on-screen note. Whitespace visualization is applied at render
+time, while ignore-whitespace modes are Git flags (`--ignore-space-at-eol`,
+`--ignore-space-change`, `--ignore-all-space`) threaded through `DiffOptions`,
+never a post-processing pass. Diff loading remains asynchronous with generation
+IDs, so a stale result cannot overwrite a newer selection.
 
 ## Remaining concerns
 

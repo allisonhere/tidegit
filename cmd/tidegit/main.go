@@ -13,12 +13,20 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
+// version is set at build time with -ldflags "-X main.version=vX.Y.Z".
+var version = "dev"
+
 func main() {
+	versionFlag := flag.Bool("version", false, "print the TideGit version and exit")
 	themeFlag := flag.String("theme", "",
 		"theme name for this session, or \"match-omarchy\"; overrides the config file")
 	configFlag := flag.String("config", "",
 		"path to config.toml; defaults to the XDG config directory")
 	flag.Parse()
+	if *versionFlag {
+		fmt.Println("tidegit", version)
+		return
+	}
 	if flag.NArg() > 1 {
 		fmt.Fprintln(os.Stderr, "Usage: tidegit [-theme NAME] [-config PATH] [PATH]")
 		os.Exit(2)

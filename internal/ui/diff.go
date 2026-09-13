@@ -27,7 +27,7 @@ type diffLine struct {
 	kind byte
 }
 
-func diffLines(d git.Diff) []diffLine {
+func diffLines(d git.Diff, lineNumbers bool) []diffLine {
 	var lines []diffLine
 	if d.Conflict {
 		lines = append(lines, diffLine{"CONFLICT: staging conflicted files is not available in this milestone.", '!'})
@@ -55,22 +55,22 @@ func diffLines(d git.Diff) []diffLine {
 			kind = 'm'
 		case strings.HasPrefix(raw, "+"):
 			kind = '+'
-			if !d.Conflict {
+			if !d.Conflict && lineNumbers {
 				text = fmt.Sprintf("     %5d %s", newLine, text)
-				newLine++
 			}
+			newLine++
 		case strings.HasPrefix(raw, "-"):
 			kind = '-'
-			if !d.Conflict {
+			if !d.Conflict && lineNumbers {
 				text = fmt.Sprintf("%5d       %s", old, text)
-				old++
 			}
+			old++
 		case strings.HasPrefix(raw, " "):
-			if !d.Conflict {
+			if !d.Conflict && lineNumbers {
 				text = fmt.Sprintf("%5d %5d %s", old, newLine, text)
-				old++
-				newLine++
 			}
+			old++
+			newLine++
 		}
 		lines = append(lines, diffLine{text, kind})
 	}

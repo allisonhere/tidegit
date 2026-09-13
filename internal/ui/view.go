@@ -65,7 +65,12 @@ func (m *Model) View() string {
 	}
 	if len(files) > 0 {
 		title += " · " + safeText(files[m.selected].Path)
-		preview = renderDiff(m.lines, r, m.scroll.Offset(), m.horizontal, height, w[2])
+		active := -1
+		if len(m.diff.Hunks) > 0 {
+			active = m.diff.Hunks[m.hunk].PatchLine
+			title = fmt.Sprintf("%s · Hunk %d/%d · %s", git.SectionNames[m.section], m.hunk+1, len(m.diff.Hunks), safeText(files[m.selected].Path))
+		}
+		preview = renderDiff(m.lines, r, m.scroll.Offset(), m.horizontal, height, w[2], active)
 		if m.diff.Patch == "" && !m.diff.Conflict {
 			preview = "No textual diff. The file may contain only metadata or submodule changes."
 		}
@@ -77,7 +82,7 @@ func (m *Model) View() string {
 		preview = "Refreshing: git status --porcelain=v2 --branch…"
 	}
 	if m.err != "" {
-		preview = renderDiff(m.lines, r, m.scroll.Offset(), m.horizontal, height, w[2])
+		preview = renderDiff(m.lines, r, m.scroll.Offset(), m.horizontal, height, w[2], -1)
 	}
 	state := "ready"
 	if m.loading {
@@ -91,12 +96,21 @@ func (m *Model) View() string {
 	if m.filtering || m.query != "" {
 		left = "Filter files: " + safeText(m.query) + "  (Enter keeps · Esc clears)"
 	}
+	if m.notice != "" {
+		left = m.notice
+	}
+	if m.err != "" {
+		left = "Git error · see diff pane · r refresh"
+	}
+	if m.busy {
+		left = m.operation + "…"
+	}
 	left = ansi.Truncate(left, max(1, m.width-23), "…")
 	layout := tideui.Layout{Width: m.width, Height: m.height, Mode: tideui.ThreeColumn, ColumnRatios: [3]float64{2, 3, 5}, Panes: [3]tideui.Pane{
 		{Title: "Status", Content: summary, Focused: m.focus == 0},
 		{Title: git.SectionNames[m.section], Content: strings.Join(rows, "\n"), Focused: m.focus == 1},
 		{Title: title, Content: preview, Focused: m.focus == 2},
-	}, Status: &tideui.StatusBar{Left: left, Right: "r refresh · ? help"}}
+	}, Status: &tideui.StatusBar{Left: left, Right: "s/u file · ? help"}}
 	if m.expanded || m.width < 65 {
 		layout.Mode = tideui.Tabbed
 	}
@@ -137,7 +151,7 @@ func fileState(f git.File, section int) string {
 	}
 }
 
-const helpText = `Read-only repository inspection
+const helpText = `Inspect and prepare changes
 
 Tab / Shift-Tab   Focus next / previous pane
 j / k or arrows   Select section, file; scroll diff
@@ -146,10 +160,14 @@ PageUp / PageDown Scroll faster
 Home / End        First / last item or diff line
 Enter             Focus the next pane
 /                 Filter files in the current section
+s / u             Stage / unstage selected FILE
+S / U             Stage / unstage selected HUNK
+[ / ]             Previous / next hunk (marked >)
 r / Ctrl-R        Refresh repository status
 z                 Expand / restore focused pane
 Esc               Clear filter / error; restore panes
 q                 Restore expanded pane, otherwise quit
 ?                 Open / close help
 
-Staging and commits arrive in later milestones.`
+Unstage preserves working-tree content.
+Commit workflow is not implemented.`

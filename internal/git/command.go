@@ -1,4 +1,4 @@
-// Package git provides read-only, cancellable repository operations backed by Git.
+// Package git provides cancellable repository operations backed by Git.
 package git
 
 import (
@@ -57,9 +57,14 @@ func (b *boundedBuffer) Write(p []byte) (int, error) {
 }
 
 func run(ctx context.Context, dir string, args ...string) (Result, error) {
+	return runInput(ctx, dir, "", args...)
+}
+
+func runInput(ctx context.Context, dir, input string, args ...string) (Result, error) {
 	cmd := exec.CommandContext(ctx, "git", append([]string{"--no-pager", "--literal-pathspecs"}, args...)...)
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), "GIT_OPTIONAL_LOCKS=0", "LC_ALL=C")
+	cmd.Stdin = strings.NewReader(input)
 	var out, errout boundedBuffer
 	cmd.Stdout = &out
 	cmd.Stderr = &errout

@@ -2,6 +2,7 @@ package ui
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"time"
 
@@ -17,10 +18,11 @@ type statusMsg struct {
 	err    error
 }
 type diffMsg struct {
-	id    int
-	diff  git.Diff
-	lines []diffLine
-	err   error
+	id       int
+	diff     git.Diff
+	lines    []diffLine
+	err      error
+	position *viewPosition
 }
 
 type Model struct {
@@ -40,6 +42,10 @@ type Model struct {
 	query                                   string
 	filtering, help, expanded               bool
 	theme                                   tideui.Theme
+	busy                                    bool
+	operation, notice                       string
+	hunk                                    int
+	restorePosition                         *viewPosition
 }
 
 func New(ctx context.Context, path string, theme tideui.Theme) *Model {
@@ -58,6 +64,9 @@ func (m *Model) setError(err error) {
 	m.lines = append(m.lines, diffLine{"Press r to retry. Open another repository with tidegit PATH.", ' '})
 }
 func (m *Model) refresh() tea.Cmd {
+	if m.busy {
+		return nil
+	}
 	if m.scanCancel != nil {
 		m.scanCancel()
 	}
@@ -69,6 +78,8 @@ func (m *Model) refresh() tea.Cmd {
 	m.loading = true
 	m.diffLoading = false
 	m.err = ""
+	m.notice = ""
+	m.restorePosition = &viewPosition{m.scroll.Offset(), m.hunk}
 	ctx, cancel := context.WithTimeout(m.ctx, 30*time.Second)
 	m.scanCancel = cancel
 	id, path := m.scanID, m.path
@@ -103,11 +114,12 @@ func (m *Model) loadDiff() tea.Cmd {
 	m.diff = git.Diff{}
 	m.lines = nil
 	m.horizontal = 0
+	m.hunk = 0
 	m.scroll.ScrollToTop()
 	m.diffLoading = false
 	files := m.files()
 	m.selected = min(m.selected, max(0, len(files)-1))
-	if len(files) == 0 || m.loading {
+	if len(files) == 0 || m.loading || m.busy {
 		return nil
 	}
 	ctx, cancel := context.WithTimeout(m.ctx, 30*time.Second)
@@ -115,14 +127,39 @@ func (m *Model) loadDiff() tea.Cmd {
 	id, repo, section, file := m.diffID, m.repo, git.Section(m.section), files[m.selected]
 	m.diffLoading = true
 	m.err = ""
+	position := m.restorePosition
+	m.restorePosition = nil
 	return func() tea.Msg {
 		defer cancel()
 		d, err := repo.Diff(ctx, section, file)
-		return diffMsg{id: id, diff: d, lines: diffLines(d), err: err}
+		if strings.Count(d.Patch, "\n") > 20000 {
+			d.Hunks = nil
+			d.HunkUnavailable = "Hunk actions unavailable: preview exceeds 20,000 lines."
+		}
+		return diffMsg{id: id, diff: d, lines: diffLines(d), err: err, position: position}
 	}
 }
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case actionMsg:
+		m.busy = false
+		m.operation = ""
+		if msg.refreshErr != nil {
+			m.setError(fmt.Errorf("%s; repository refresh failed: %w", msg.notice, msg.refreshErr))
+			if msg.err != nil {
+				m.setError(fmt.Errorf("%w\nRefresh also failed: %v", msg.err, msg.refreshErr))
+			}
+			return m, nil
+		}
+		m.status = msg.status
+		m.selectPath(msg.path, msg.preferred)
+		if msg.err != nil {
+			m.setError(msg.err)
+			return m, nil
+		}
+		m.notice = msg.notice
+		m.restorePosition = &msg.position
+		return m, m.loadDiff()
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
 	case statusMsg:
@@ -139,21 +176,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			old = f[m.selected].Path
 		}
 		m.repo, m.status = msg.repo, msg.status
-		if len(m.files()) == 0 && m.query == "" {
-			for i, f := range m.status.Groups {
-				if len(f) > 0 {
-					m.section = i
-					break
-				}
-			}
-		}
-		m.selected = 0
-		for i, f := range m.files() {
-			if f.Path == old {
-				m.selected = i
-				break
-			}
-		}
+		m.selectPath(old, m.section)
 		return m, m.loadDiff()
 	case diffMsg:
 		if msg.id != m.diffID {
@@ -165,6 +188,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			m.diff = msg.diff
 			m.lines = msg.lines
+			m.hunk = 0
+			if msg.position != nil {
+				m.hunk = min(max(0, len(m.diff.Hunks)-1), msg.position.hunk)
+				m.scroll.ScrollDown(msg.position.scroll)
+				m.scroll.ClampTo(len(m.lines), max(1, m.height-5))
+			}
 		}
 	case tea.KeyMsg:
 		key := msg.String()
@@ -175,6 +204,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if key == "esc" || key == "q" || key == "?" {
 				m.help = false
 			}
+			return m, nil
+		}
+		// Keep the visible target stable until mutation and its scan finish.
+		// Focus, expansion, help and quit remain responsive.
+		if m.busy && key != "tab" && key != "shift+tab" && key != "z" && key != "?" && key != "q" {
 			return m, nil
 		}
 		if m.filtering {
@@ -199,6 +233,18 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, m.loadDiff()
 		}
 		switch key {
+		case "s":
+			return m, m.act(StageFile)
+		case "u":
+			return m, m.act(UnstageFile)
+		case "S":
+			return m, m.act(StageHunk)
+		case "U":
+			return m, m.act(UnstageHunk)
+		case "]":
+			m.moveHunk(1)
+		case "[":
+			m.moveHunk(-1)
 		case "q":
 			if m.expanded {
 				m.expanded = false

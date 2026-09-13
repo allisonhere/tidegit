@@ -5,16 +5,20 @@ import (
 	"errors"
 )
 
-// Diff retains Git's patch unchanged. A future patch model can derive hunks and
-// line selections from this data without coupling patch application to rendering.
+// Diff retains Git's patch unchanged alongside addressable hunks. Presentation
+// and future line selections remain independent of Git patch application.
 type Diff struct {
-	Patch     string
-	Truncated bool
-	Conflict  bool
+	Patch           string
+	Truncated       bool
+	Conflict        bool
+	File            File
+	Source          Section
+	Hunks           []Hunk
+	HunkUnavailable string
 }
 
 func (r Repository) Diff(ctx context.Context, section Section, file File) (Diff, error) {
-	args := []string{"diff", "--no-ext-diff", "--no-textconv", "--no-color", "--unified=3"}
+	args := []string{"diff", "--no-ext-diff", "--no-textconv", "--no-color", "--unified=3", "--src-prefix=a/", "--dst-prefix=b/", "--no-relative", "--inter-hunk-context=0", "--output-indicator-new=+", "--output-indicator-old=-", "--output-indicator-context= "}
 	switch section {
 	case Staged:
 		args = append(args, "--cached")
@@ -25,7 +29,7 @@ func (r Repository) Diff(ctx context.Context, section Section, file File) (Diff,
 	}
 	if section != Untracked {
 		args = append(args, "--", file.Path)
-		if file.OriginalPath != "" {
+		if file.OriginalPath != "" && section == Staged {
 			args = append(args, file.OriginalPath)
 		}
 	}
@@ -34,5 +38,9 @@ func (r Repository) Diff(ctx context.Context, section Section, file File) (Diff,
 	if section == Untracked && errors.As(err, &ce) && res.ExitCode == 1 {
 		err = nil
 	}
-	return Diff{Patch: res.Stdout, Truncated: res.Truncated, Conflict: section == Conflicted}, err
+	d := Diff{Patch: res.Stdout, Truncated: res.Truncated, Conflict: section == Conflicted, File: file, Source: section}
+	if err == nil {
+		d.Hunks, d.HunkUnavailable = parseHunks(d)
+	}
+	return d, err
 }

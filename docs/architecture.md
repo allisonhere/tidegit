@@ -19,10 +19,14 @@ No built-in Shift-Space binding was found; `z` provides discoverable expansion.
 - `cmd/tidegit`: launch flags, program lifecycle and cancellation.
 - `internal/git`: repository discovery, porcelain parsing, typed status/diff
   operations, command execution and structured errors. No UI imports.
+- `internal/git/patch.go`: hunk parsing, source metadata and patch generation.
+- `internal/git/staging.go`: serialized file and index-only hunk operations.
 - `internal/ui/model.go`: focus, selection, filter, refresh generation and
   background command lifecycle.
 - `internal/ui/view.go`: TideUI shell and context rendering.
 - `internal/ui/diff.go`: terminal-safe diff presentation, line numbers and colors.
+- `internal/ui/actions.go`: typed actions, mutation lifecycle, selection following
+  and hunk navigation; suitable for a future palette dispatcher.
 
 Git runs through argument arrays, never a shell. Pathspecs are literal and
 separated with `--`. Status uses `--porcelain=v2 --branch -z` and retains paths
@@ -39,12 +43,57 @@ prepared diff lines stay in memory until deliberately invalidated. Only visible
 diff rows are styled during rendering. There is no multi-file diff cache yet.
 Refresh retains selection by path when possible.
 
-The Git `Diff` result keeps the original patch, separate from presentation.
-Partial staging should introduce a parsed patch/hunk model here and apply
-Git-compatible patches through Git, never by editing working files. Truncated
-previews must never be used for patch application. Split view can consume the
-same patch model later. The current viewer recognizes patch syntax and Git's
-function headers; source-language token highlighting is not included.
+The Git `Diff` result keeps the original patch and typed hunks, separate from
+presentation. Each `Hunk` includes file identity, source section, original file
+headers, raw old/new header paths, hunk header/body, old/new ranges, a SHA-256
+identity derived from original patch bytes, and a row hint used only for
+navigation. Hunk identity never depends on displayed line numbers. Body lines
+and ranges leave room for future reduced patches and split diff rendering.
+The current viewer recognizes patch syntax and Git's function headers;
+source-language token highlighting is not included.
+
+## Staging mechanisms and safety
+
+Whole-file staging uses `git add -- <literal path>`. Whole-file unstaging uses
+`git restore --staged --source=HEAD -- <literal path>`. On unborn HEAD it uses
+`git rm --cached -f -- <literal path>`: `--cached` is essential; the force flag
+only allows removing the index entry when index and working file differ.
+No command writes the working tree. Staged renames include both paths when
+unstaging; copies include only the destination. An unstaged diff for a staged
+rename includes only its destination, so a recreated old path stays unrelated.
+Directory staging is rejected to prevent accidentally staging descendants.
+
+Hunk operations pipe a generated patch directly into `git apply --cached
+--whitespace=nowarn -`, adding `--reverse` for unstaging. Git performs the
+atomic index update and patch validation. No interactive Git process, manual
+index editing, temporary patch file or retry is used. Original no-newline
+markers and hunk ranges are preserved. Existing-file patches contain content
+headers only, so reversing text changes preserves staged rename/copy/mode
+metadata; new/deleted files retain their required file headers.
+
+Before applying, the service re-reads the source diff and matches the hunk's
+identity and generated patch. Modified or stale requests fail visibly. This
+revalidation does not lock out external tools; Git's index lock and patch
+validation remain authoritative if another process changes the index.
+Truncated previews, combined conflicts, submodules, binary and multi-file
+patches do not expose hunk actions. The UI also disables hunk actions when its
+20,000-line preview limit is exceeded.
+
+Diffs explicitly set a/b prefixes, output indicators, three context lines,
+zero inter-hunk context and non-relative output. These minimal changes were
+necessary because user-configured preview prefixes/indicators are not a stable
+patch transport format. Ordinary Git configuration, attributes and filters
+still apply to whole-file staging; partial staging applies Git's native diff
+content directly to the index.
+
+A cancellable semaphore serializes mutations per canonical repository root.
+Git's own `index.lock` coordinates with external processes. The UI keeps a
+mutation gate closed through the ensuing status scan, cancels and invalidates
+old read requests, and rejects repeated mutation/refresh keys while busy. It
+rescans even after failures, then loads the relevant diff. Whole-file actions
+prefer the destination group; hunk actions prefer remaining source hunks.
+Focus and approximate hunk/scroll position survive refresh. Read-only scans
+and diffs otherwise retain the existing background command architecture.
 
 `Repository` currently records the discovered root. It can grow explicit Git
 directory/common-directory identity for worktrees and submodules; there is no
@@ -65,7 +114,7 @@ use Ripple v0.3.0's `StyleKey`/`Style` hooks.
 
 The future commit service must invoke normal `git commit`, preserve hook and
 signing behavior, and leave cleanup/comment semantics to Git. No Ripple runtime
-dependency or placeholder editor is added to this read-only milestone.
+dependency or placeholder editor is added to this staging milestone.
 
 ## Remaining concerns
 
@@ -78,6 +127,9 @@ Very large status lists fail visibly rather than silently dropping paths. Later
 performance work should profile scan latency, add debounced watching and assess
 incremental status strategies without compromising Git semantics.
 
-The workspace initially contained no application files and no usable Git
-metadata (only a restricted `.git` placeholder). No Git repository was created
-and no commit was made as part of implementation.
+Before Milestone 3, extend the existing mutation lifecycle for hook/signing
+processes and retain the Ripple buffer across failures. The current 30-second
+staging deadline is unsuitable as a blanket deadline for interactive signing
+or long-running commit hooks. There is no need to replace the shell or Git
+service architecture. Worktree-aware index identity will be needed when
+worktree support enters scope; the current semaphore keys ordinary roots.

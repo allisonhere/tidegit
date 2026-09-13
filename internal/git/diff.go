@@ -15,6 +15,9 @@ type Diff struct {
 	Source          Section
 	Hunks           []Hunk
 	HunkUnavailable string
+	// Commit is the abbreviated hash when this patch came from history rather
+	// than the working tree. The viewer labels the pane with it.
+	Commit string
 }
 
 func (r Repository) Diff(ctx context.Context, section Section, file File) (Diff, error) {

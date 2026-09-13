@@ -26,6 +26,12 @@ type CommandError struct {
 
 func (e *CommandError) Error() string {
 	detail := strings.TrimSpace(e.Result.Stderr)
+	if strings.TrimSpace(e.Result.Stdout) != "" {
+		if detail != "" {
+			detail += "\n"
+		}
+		detail += strings.TrimSpace(e.Result.Stdout)
+	}
 	if detail == "" {
 		detail = e.Cause.Error()
 	}

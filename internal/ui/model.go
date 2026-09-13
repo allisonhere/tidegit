@@ -46,12 +46,35 @@ type Model struct {
 	operation, notice                       string
 	hunk                                    int
 	restorePosition                         *viewPosition
+	compose                                 *commitState
+	opening                                 bool
+	frame                                   int
+
+	// Screens beyond Status. Each keeps its own state so switching away and
+	// back does not discard a selection or reload what is already known.
+	screen                                    screen
+	head                                      git.Head
+	history                                   *historyState
+	branches                                  *branchState
+	palette                                   *paletteState
+	prompt                                    *promptState
+	confirm                                   *confirmState
+	deleteTarget                              string
+	picker                                    *tideui.ThemePicker
+	omarchySignature                          string
+	omarchyWatching                           bool
+	historyID, detailID, branchID             int
+	historyCancel, detailCancel, branchCancel context.CancelFunc
 }
 
 func New(ctx context.Context, path string, theme tideui.Theme) *Model {
 	return &Model{ctx: ctx, path: path, theme: theme, width: 100, height: 28}
 }
-func (m *Model) Init() tea.Cmd { return m.refresh() }
+func (m *Model) Init() tea.Cmd {
+	// A theme that follows the desktop starts its poll as soon as the program
+	// does, not only when it is chosen from the picker.
+	return tea.Batch(m.refresh(), m.followOmarchy())
+}
 
 func (m *Model) setError(err error) {
 	m.err = err.Error()
@@ -64,7 +87,7 @@ func (m *Model) setError(err error) {
 	m.lines = append(m.lines, diffLine{"Press r to retry. Open another repository with tidegit PATH.", ' '})
 }
 func (m *Model) refresh() tea.Cmd {
-	if m.busy {
+	if m.busy || m.opening {
 		return nil
 	}
 	if m.scanCancel != nil {
@@ -140,6 +163,18 @@ func (m *Model) loadDiff() tea.Cmd {
 	}
 }
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if handled, cmd := m.handleCommitResult(msg); handled {
+		return m, cmd
+	}
+	if handled, cmd := m.handleHistoryResult(msg); handled {
+		return m, cmd
+	}
+	if handled, cmd := m.handleBranchResult(msg); handled {
+		return m, cmd
+	}
+	if m.compose != nil {
+		return m, m.updateCommit(msg)
+	}
 	switch msg := msg.(type) {
 	case actionMsg:
 		m.busy = false
@@ -176,6 +211,14 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			old = f[m.selected].Path
 		}
 		m.repo, m.status = msg.repo, msg.status
+		m.head = git.Head{Branch: msg.status.Branch, OID: msg.status.OID,
+			Detached: msg.status.Branch == "(detached)", Unborn: msg.status.OID == "(initial)"}
+		if m.head.Detached {
+			m.head.Branch = ""
+		}
+		if len(m.head.OID) >= 7 && !m.head.Unborn {
+			m.head.Short = m.head.OID[:7]
+		}
 		m.selectPath(old, m.section)
 		return m, m.loadDiff()
 	case diffMsg:
@@ -192,141 +235,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if msg.position != nil {
 				m.hunk = min(max(0, len(m.diff.Hunks)-1), msg.position.hunk)
 				m.scroll.ScrollDown(msg.position.scroll)
-				m.scroll.ClampTo(len(m.lines), max(1, m.height-5))
+				m.scroll.ClampTo(len(m.lines), m.diffViewportHeight())
 			}
 		}
 	case tea.KeyMsg:
-		key := msg.String()
-		if key == "ctrl+c" {
-			return m, tea.Quit
-		}
-		if m.help {
-			if key == "esc" || key == "q" || key == "?" {
-				m.help = false
-			}
-			return m, nil
-		}
-		// Keep the visible target stable until mutation and its scan finish.
-		// Focus, expansion, help and quit remain responsive.
-		if m.busy && key != "tab" && key != "shift+tab" && key != "z" && key != "?" && key != "q" {
-			return m, nil
-		}
-		if m.filtering {
-			switch key {
-			case "enter":
-				m.filtering = false
-				return m, nil
-			case "esc":
-				m.filtering = false
-				m.query = ""
-			case "backspace":
-				r := []rune(m.query)
-				if len(r) > 0 {
-					m.query = string(r[:len(r)-1])
-				}
-			default:
-				if msg.Type == tea.KeyRunes {
-					m.query += string(msg.Runes)
-				}
-			}
-			m.selected = 0
-			return m, m.loadDiff()
-		}
-		switch key {
-		case "s":
-			return m, m.act(StageFile)
-		case "u":
-			return m, m.act(UnstageFile)
-		case "S":
-			return m, m.act(StageHunk)
-		case "U":
-			return m, m.act(UnstageHunk)
-		case "]":
-			m.moveHunk(1)
-		case "[":
-			m.moveHunk(-1)
-		case "q":
-			if m.expanded {
-				m.expanded = false
-			} else {
-				return m, tea.Quit
-			}
-		case "esc":
-			m.expanded = false
-			m.query = ""
-			m.err = ""
-			return m, m.loadDiff()
-		case "?":
-			m.help = true
-		case "tab":
-			m.focus = (m.focus + 1) % 3
-		case "shift+tab":
-			m.focus = (m.focus + 2) % 3
-		case "enter":
-			if m.focus < 2 {
-				m.focus++
-			}
-		case "z":
-			m.expanded = !m.expanded
-		case "h", "left":
-			if m.focus == 2 {
-				m.horizontal = max(0, m.horizontal-8)
-			}
-		case "l", "right":
-			if m.focus == 2 {
-				m.horizontal = min(m.horizontal+8, outputWidth(m.lines))
-			}
-		case "/":
-			m.focus = 1
-			m.filtering = true
-		case "r", "ctrl+r":
-			return m, m.refresh()
-		case "j", "down", "k", "up", "pgdown", "pgup", "home", "end":
-			delta := 1
-			if key == "k" || key == "up" || key == "pgup" {
-				delta = -1
-			}
-			if key == "pgdown" || key == "pgup" {
-				delta *= max(1, m.height-5)
-			}
-			if m.focus == 2 {
-				if key == "home" {
-					m.scroll.ScrollToTop()
-				} else if key == "end" {
-					m.scroll.ScrollDown(len(m.lines))
-				} else if delta < 0 {
-					m.scroll.ScrollUp(-delta)
-				} else {
-					m.scroll.ScrollDown(delta)
-				}
-				m.scroll.ClampTo(len(m.lines), max(1, m.height-5))
-			} else if m.focus == 0 {
-				n := min(3, max(0, m.section+delta))
-				if key == "home" {
-					n = 0
-				}
-				if key == "end" {
-					n = 3
-				}
-				if n != m.section {
-					m.section = n
-					m.selected = 0
-					return m, m.loadDiff()
-				}
-			} else {
-				n := min(max(0, len(m.files())-1), max(0, m.selected+delta))
-				if key == "home" {
-					n = 0
-				}
-				if key == "end" {
-					n = max(0, len(m.files())-1)
-				}
-				if n != m.selected {
-					m.selected = n
-					return m, m.loadDiff()
-				}
-			}
-		}
+		return m, m.handleKey(msg)
 	}
 	return m, nil
 }

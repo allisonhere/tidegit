@@ -5,7 +5,13 @@
 Before implementation, the local TideUI source, its README, and TideMail's Ripple
 adapter were inspected, along with the cached Ripple v0.3.0 API documentation.
 The build pins TideUI `v0.2.3-0.20260823151826-81535e78c84e`, which contains
-the soft-panel API, without a machine-specific local replacement.
+the soft-panel API.
+
+**Temporary:** `go.mod` currently carries a local `replace` for TideUI pointing
+at `/home/allie/Projects/tideui`, because the background-continuity fix
+(`StyleOver`) is not in a published version yet. This is machine-specific and
+must be removed once TideUI is tagged and pushed; the pin then moves to that
+version instead.
 
 TideUI is a view-oriented toolkit. It does **not** own the application model,
 focus routing, mouse hit testing or arbitrary list navigation. TideGit owns
@@ -21,12 +27,28 @@ No built-in Shift-Space binding was found; `z` provides discoverable expansion.
   operations, command execution and structured errors. No UI imports.
 - `internal/git/patch.go`: hunk parsing, source metadata and patch generation.
 - `internal/git/staging.go`: serialized file and index-only hunk operations.
+- `internal/git/commit.go`: commit review metadata, index identity and the
+  `git commit` invocation.
 - `internal/ui/model.go`: focus, selection, filter, refresh generation and
   background command lifecycle.
 - `internal/ui/view.go`: TideUI shell and context rendering.
 - `internal/ui/diff.go`: terminal-safe diff presentation, line numbers and colors.
 - `internal/ui/actions.go`: typed actions, mutation lifecycle, selection following
   and hunk navigation; suitable for a future palette dispatcher.
+- `internal/ui/commit.go`: commit state, Ripple lifecycle and message routing.
+- `internal/ui/commit_view.go`: commit screen rendering and Ripple styling.
+- `internal/ui/clipboard.go`: platform clipboard adapter for Ripple.
+- `internal/git/history.go`: commit records, paging, changed files, commit diffs.
+- `internal/git/refs.go`: ref listing, decoration parsing, HEAD resolution.
+- `internal/git/branch.go`: branch listing, tracking data and branch mutations.
+- `internal/git/graph.go`: lane assignment — topology only, no presentation.
+- `internal/ui/screen.go`: screen routing, shared keys and responsive layout.
+- `internal/ui/history.go` / `history_view.go`: History state and rendering.
+- `internal/ui/branches.go` / `branches_view.go`: Branches state and rendering.
+- `internal/ui/graph_view.go`: graph glyphs and ref badges.
+- `internal/ui/palette.go`, `internal/ui/prompt.go`: command palette, one-line
+  prompts and confirmations.
+- `internal/ui/visual.go`: shared chrome, help panels and activity indicator.
 
 Git runs through argument arrays, never a shell. Pathspecs are literal and
 separated with `--`. Status uses `--porcelain=v2 --branch -z` and retains paths
@@ -98,23 +120,161 @@ and diffs otherwise retain the existing background command architecture.
 `Repository` currently records the discovered root. It can grow explicit Git
 directory/common-directory identity for worktrees and submodules; there is no
 assumption that `.git` is a directory. Bare repositories are not supported by
-this working-tree screen. Operation-state detection (merge/rebase/cherry-pick)
-and conflict continuation remain future work.
+this working-tree screen. Operation state is read only where a commit depends on
+it (`MERGE_HEAD`); presenting and continuing merge, rebase or cherry-pick, and
+conflict resolution, remain future work.
 
-## Ripple integration planned for Milestone 3
+## Commit (Milestone 3)
 
-A dedicated commit state will embed `ripple.Model`, initialized with `ripple.New`.
-Load Git's commit template through the Git service, then use `SetValue`, `Focus`,
-`SetSize`, `Update`, `Value` and `View(ripple.Options{...})`. Ripple owns cursor
-movement, wrapping, selection, undo/redo and the message buffer. TideUI owns
-the surrounding view and styles; do not rewrap Ripple's rendered output.
-Ripple's clipboard interface can be adapted later. Route its `SubmitMsg` and
-`CancelMsg` to host actions, preserving the buffer on Git failure. Comments can
-use Ripple v0.3.0's `StyleKey`/`Style` hooks.
+`commitState` embeds `ripple.Model` from `ripple.New`, wired with `SetClipboard`,
+`SetValue`, `SetPlaceholder`, `Focus`/`Blur`, `SetSize`, `Update` and
+`View(ripple.Options{...})`. Ripple owns cursor movement, wrapping, selection,
+undo/redo and the buffer; TideGit never rewraps its rendered output and clips it
+to exactly the allocated cells. `StyleKey`/`Style` mark the subject line and
+comment lines without changing the text Git receives. `SubmitMsg` and `CancelMsg`
+route to the host's submit and cancel actions, and Ripple's `CopiedMsg`/`PasteMsg`
+errors surface as an inline clipboard notice rather than a failed edit. The
+clipboard adapter runs fixed argv (`pbcopy`/`pbpaste`, `wl-copy`/`wl-paste`,
+`xclip`) with text passed only over stdin, and its absence is reported, not fatal.
 
-The future commit service must invoke normal `git commit`, preserve hook and
-signing behavior, and leave cleanup/comment semantics to Git. No Ripple runtime
-dependency or placeholder editor is added to this staging milestone.
+`PrepareCommit` reads only: index digest, status, comment prefix, HEAD message or
+`commit.template`, and a staged numstat summary. It never stages or alters the
+index, and it re-reads the index digest afterwards so a review assembled while
+another process wrote the index is rejected instead of displayed. `meaningfulCommit`
+refuses conflicted trees and empty commits, while deliberately allowing a merge
+commit with an unchanged tree by checking `MERGE_HEAD` through `rev-parse
+--git-path`.
+
+`Commit` runs ordinary `git commit --file=-` under the same per-repository
+mutation semaphore as staging, with the message on stdin so no path, quoting or
+temporary file is involved. Hooks, signing, identity and cleanup stay Git's.
+Only the implicit `-F` cleanup default is overridden — to `strip`, matching a
+composed message — and an explicit `commit.cleanup` is always preserved.
+`--amend` and `--signoff` are passed through as flags. The recorded `ExpectedHead`
+and `ExpectedIndex` from the review are re-checked inside the lock, so a commit
+can never record content the author did not see. A failure returns Git's captured
+output with the draft intact; the buffer is only cleared on success.
+
+Unlike every other command, the commit has no deadline: hooks, signing and
+pinentry may legitimately wait for a person. That makes the UI's usual busy gate
+a trap, so while Git runs, Ctrl-C quits TideGit. Everything else stays gated, and
+the draft is the only thing lost. Ripple keeps Ctrl-C as copy while editing.
+
+The commit screen's staged preview reuses the diff pipeline and generation IDs,
+so its reads cancel and reject stale completions like any other diff.
+
+## History and branches (Milestone 4)
+
+History is read through `git log --topo-order` with a `--pretty=format` built
+from `%`-placeholders separated by ASCII unit and record separators. Git never
+emits those bytes from a placeholder, so a subject, author name or ref
+decoration containing tabs, newlines or quotes cannot make the stream
+ambiguous. No human-oriented Git output is parsed anywhere. Refs come from
+`for-each-ref` with the same separators, dereferencing annotated tags to their
+commit so a tag matches the commit it marks. Branch tracking uses
+`%(upstream:track,nobracket)`, which costs one command for the whole list
+rather than one `rev-list` per branch.
+
+Topological order is deliberate: date order can interleave branches between
+pages and make lanes jump when the next page arrives. `--topo-order` keeps a
+page boundary from reordering what is already drawn.
+
+A commit's changed files are read as two `-z` diffs against the first parent —
+`--numstat` for counts and `--name-status` for change kinds — merged by path. A
+merge is therefore summarised the way `git show` summarises it, and a root
+commit is compared against the empty tree by asking `git show` instead of
+inventing an empty-tree hash. One file's patch is fetched with the same flags
+the working-tree viewer uses, so `internal/ui/diff.go` renders history and the
+working tree through one code path. A historical `Diff` carries its commit and
+an explicit `HunkUnavailable`: staging actions apply to the working tree, and a
+patch from history can never become a staging target.
+
+`GraphLanes` is a pure function from commits to per-row lane geometry. It holds
+no glyphs, colours or widths, so the renderer chooses box characters or ASCII,
+and a later screen — rebase, cherry-pick, a compare view — can reuse the
+topology without the History screen. Each lane remembers the commit it is
+waiting for; a commit claims the leftmost lane waiting for it, other lanes
+waiting for the same commit collapse into it, and parents are handed back out
+with the first keeping the commit's own lane so straight history never drifts
+sideways. A lane released by a merge stays reserved until the row is finished,
+because reusing it immediately would draw one line both ending and starting in
+a single cell. Rendering caps the drawn lanes and marks the overflow rather than
+pushing the subject off the row.
+
+## Screens, loading and responsiveness
+
+`screen.go` routes one keystroke: global gates, then whichever overlay is open,
+then the active screen. Screens keep their own state, so leaving and returning
+preserves a selection; `r` reloads on demand. Returning to Status always
+rescans, because a branch switch made elsewhere changes the working tree.
+
+History loads `HistoryBatch` commits at a time and requests the next page as the
+selection approaches the end. Lanes are recomputed over the whole list when a
+page arrives so the new page continues the lanes the earlier pages established.
+Commit inspection is debounced and cached: holding `j` schedules one load after
+the cursor settles, a commit already inspected is shown without touching Git,
+and the cache is bounded so walking a long history does not retain every commit
+it passed. Generation counters reject stale results, and each concurrent load
+owns its own context — two commands sharing one would let whichever finished
+first cancel the other.
+
+Layout has three tiers rather than a cliff: three columns when there is room,
+TideUI's `StackedRight` at medium widths so the sidebar survives and the other
+two panes stack, and `Tabbed` when the terminal is genuinely small. Commit rows
+give up metadata in a fixed order — author, age, hash, refs — and the columns
+are decided once per render so the hash and the right-hand gutter line up down
+the whole pane instead of moving from row to row. The graph and the subject are
+never sacrificed.
+
+## Branch mutations
+
+Switching, creating, renaming and deleting run through the same per-repository
+mutation semaphore as staging and committing, and each is ordinary Git
+porcelain: `switch`, `branch`, `branch --move`, `branch --delete`. Checkout
+semantics stay Git's — nothing is stashed, reset or force-checked-out on a
+caller's behalf, so a switch that would overwrite local work is refused by Git
+and reported. Names are checked with `check-ref-format --branch` before any
+mutation, which catches a typo without touching the repository while leaving
+Git the authority on what is valid.
+
+Deletion is safe by default. `DeleteBranch` only passes `-D` when the caller
+explicitly asks, and a refusal for unmerged commits is returned as a typed
+`ErrUnmergedBranch`. The UI turns that into a second confirmation with different
+wording and a different key; nothing escalates on its own. The background worker
+only builds a message — model state is never written from a command goroutine —
+and every mutation is followed by a rescan, so the screen never shows state from
+before the change.
+
+## Themes
+
+The picker is TideUI's own `ThemePicker`; TideGit supplies only what the toolkit
+leaves to the host — when it opens, which theme the view renders with while a
+preview is live, and what happens to the confirmed choice. Previewing works by
+having `renderer()` build from `activeTheme()` rather than the stored theme, so
+the entire app repaints in the highlighted palette without anything being
+committed to.
+
+`internal/omarchy` reads the desktop's active theme, preferring Omarchy's own
+`omarchy-theme-color` resolver (which applies its alias and shade cascade) and
+falling back to parsing the staged theme files. It is the same reader the other
+Tide applications use, copied rather than shared because there is no common
+module to hold it yet.
+
+`match-omarchy` is not a stored palette: it is resolved when selected and
+re-resolved whenever the desktop changes. A cheap signature — the theme name
+plus the state file's mtime — is polled every two seconds, and the palette is
+only re-read when that token changes. The poll starts when the theme is chosen
+or at launch, refuses to stack a second loop, and stops on the first tick after
+the theme changes to something else.
+
+Contrast correction lives in TideUI (`CorrectThemeContrast`) rather than here.
+An arbitrary desktop palette cannot be trusted to be readable in a dense
+terminal UI, but the maths for fixing that is the toolkit's concern, not the
+application's — and each of the other Tide applications had grown its own copy.
+The floors are the ones the built-in themes already meet, so correction is close
+to a no-op on a hand-tuned palette and only moves a colour that genuinely fails.
+The focused pane border is deliberately not corrected at theme level, because
+`BuildStyles` already lifts that one where it renders.
 
 ## Remaining concerns
 
@@ -127,9 +287,24 @@ Very large status lists fail visibly rather than silently dropping paths. Later
 performance work should profile scan latency, add debounced watching and assess
 incremental status strategies without compromising Git semantics.
 
-Before Milestone 3, extend the existing mutation lifecycle for hook/signing
-processes and retain the Ripple buffer across failures. The current 30-second
-staging deadline is unsuitable as a blanket deadline for interactive signing
-or long-running commit hooks. There is no need to replace the shell or Git
-service architecture. Worktree-aware index identity will be needed when
-worktree support enters scope; the current semaphore keys ordinary roots.
+The index digest is a whole-index SHA-256 of `ls-files --stage`, which is exact
+but O(index). A large repository will want a cheaper identity, and the digest
+already fails loudly rather than silently on an oversized index. Operation-state
+detection (merge/rebase/cherry-pick) is read only far enough to permit a merge
+commit; presenting and continuing those operations remains future work, as does
+amending anything other than HEAD. Worktree-aware index identity will be needed
+when worktree support enters scope; the current semaphore keys ordinary roots.
+
+Killing TideGit during a commit leaves Git to be killed with it, exactly as
+Ctrl-C at a shell prompt would; Git's own lock files remain the recovery
+mechanism. A future watching layer should treat the commit review as a consumer
+of index change notifications instead of requiring a manual Ctrl-R.
+
+History paging uses `--skip`, which Git satisfies by walking from the start each
+time; it is fine for the pages a person scrolls through but is not the right
+mechanism for walking deep into a very large repository. A commit-id cursor
+would replace it without changing the UI. Ref and branch lists are read whole:
+a repository with thousands of refs will want filtering pushed into
+`for-each-ref`. The graph is computed over the loaded page rather than the whole
+history, which is what keeps it cheap, and is correct because lanes are derived
+from the commits actually shown.

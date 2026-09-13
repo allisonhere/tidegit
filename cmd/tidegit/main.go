@@ -6,17 +6,20 @@ import (
 	"fmt"
 	"os"
 
+	"strings"
+
 	"github.com/allisonhere/tidegit/internal/ui"
-	"github.com/allisonhere/tideui"
 	tea "github.com/charmbracelet/bubbletea"
 )
 
 func main() {
-	themeName := flag.String("theme", "catppuccin-mocha", "TideUI theme name")
+	themeName := flag.String("theme", "catppuccin-mocha",
+		"theme name, or \"match-omarchy\" to follow the desktop theme")
 	flag.Parse()
-	theme, ok := tideui.ThemeByName(*themeName)
+	theme, ok := ui.ResolveTheme(*themeName)
 	if !ok {
-		fmt.Fprintln(os.Stderr, "Unknown TideUI theme:", *themeName)
+		fmt.Fprintln(os.Stderr, "Unknown theme:", *themeName)
+		fmt.Fprintln(os.Stderr, "Available:", strings.Join(ui.ThemeNames(), ", "))
 		os.Exit(2)
 	}
 	if flag.NArg() > 1 {

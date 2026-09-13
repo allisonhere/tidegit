@@ -13,6 +13,7 @@ import (
 	"github.com/allisonhere/tideui"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 )
 
 func uiGit(t *testing.T, dir string, args ...string) string {
@@ -35,7 +36,10 @@ func stagingModel(t *testing.T) (*Model, string) {
 	t.Helper()
 	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
-	dir := t.TempDir()
+	dir := filepath.Join(t.TempDir(), "tidegit")
+	if err := os.Mkdir(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
 	uiGit(t, dir, "init", "-b", "main")
 	uiGit(t, dir, "config", "user.name", "TideGit Test")
 	uiGit(t, dir, "config", "user.email", "test@example.invalid")
@@ -54,11 +58,25 @@ func stagingModel(t *testing.T) (*Model, string) {
 }
 func drain(t *testing.T, m *Model, cmd tea.Cmd) {
 	t.Helper()
-	for i := 0; cmd != nil; i++ {
-		if i > 10 {
+	queue := []tea.Cmd{cmd}
+	for i := 0; len(queue) > 0; i++ {
+		if i > 100 {
 			t.Fatal("command loop")
 		}
-		_, cmd = m.Update(cmd())
+		cmd = queue[0]
+		queue = queue[1:]
+		if cmd == nil {
+			continue
+		}
+		msg := cmd()
+		if batch, ok := msg.(tea.BatchMsg); ok {
+			queue = append(queue, batch...)
+			continue
+		}
+		_, next := m.Update(msg)
+		if next != nil {
+			queue = append(queue, next)
+		}
 	}
 }
 func key(t *testing.T, m *Model, k string) {
@@ -162,11 +180,26 @@ func TestSelectionAndHunkRenderingAcrossSizes(t *testing.T) {
 	if !strings.Contains(v, "Hunk 2/2") || !strings.Contains(v, "> @@") {
 		t.Fatal("selected hunk is not visibly marked")
 	}
-	for _, hint := range []string{"s / u", "S / U", "[ / ]", "working-tree"} {
-		if !strings.Contains(helpText, hint) {
+	key(t, m, "?")
+	help := ansi.Strip(m.View())
+	for _, hint := range []string{"s / u", "S / U", "[ / ]", "c  compose commit", "A  amend HEAD", "working-tree"} {
+		if !strings.Contains(help, hint) {
 			t.Fatalf("missing help: %s", hint)
 		}
 	}
+	key(t, m, "?")
+	if m.help {
+		t.Fatal("help did not close")
+	}
+	m.height = 20
+	key(t, m, "?")
+	compact := ansi.Strip(m.View())
+	for _, hint := range []string{"s/u file", "S/U hunk", "c commit", "A amend"} {
+		if !strings.Contains(compact, hint) {
+			t.Fatalf("missing compact help: %s", hint)
+		}
+	}
+	key(t, m, "?")
 }
 
 func TestFollowUntrackedAndPreserveOtherSelection(t *testing.T) {

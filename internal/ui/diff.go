@@ -42,7 +42,7 @@ func diffLines(d git.Diff) []diffLine {
 		switch {
 		case strings.HasPrefix(raw, "diff "):
 			inHunk = false
-			kind = '@'
+			kind = 'm'
 		case strings.HasPrefix(raw, "@@ "):
 			inHunk = true
 			var a, b string
@@ -52,7 +52,7 @@ func diffLines(d git.Diff) []diffLine {
 			}
 			kind = '@'
 		case strings.HasPrefix(raw, "@@@"), !inHunk && (strings.HasPrefix(raw, "index ") || strings.HasPrefix(raw, "--- ") || strings.HasPrefix(raw, "+++ ") || strings.HasPrefix(raw, "Binary")):
-			kind = '@'
+			kind = 'm'
 		case strings.HasPrefix(raw, "+"):
 			kind = '+'
 			if !d.Conflict {
@@ -101,13 +101,26 @@ func renderDiff(lines []diffLine, r tideui.Renderer, offset, horizontal, height,
 			style = style.Foreground(r.Styles.Theme.Error)
 		case '@':
 			style = style.Foreground(r.Styles.Theme.BorderFocus).Bold(true)
+		case 'm':
+			style = r.Styles.DetailMeta.Italic(false)
 		}
 		prefix := "  "
 		if i+offset == active {
 			prefix = "> "
 			style = r.Styles.ItemSelected
 		}
-		out = append(out, style.Render(prefix+ansi.Cut(line.text, horizontal, horizontal+max(0, width-2))))
+		text := ansi.Cut(line.text, horizontal, horizontal+max(0, width-2))
+		if i+offset == active {
+			out = append(out, style.Width(width).Render(prefix+text))
+			continue
+		}
+		if (line.kind == '+' || line.kind == '-' || line.kind == ' ') && len(line.text) >= 12 && horizontal == 0 {
+			gutter := ansi.Cut(line.text, 0, 12)
+			body := ansi.Cut(line.text, 12, max(12, width-2))
+			out = append(out, r.Styles.DetailMeta.Italic(false).Render(prefix+gutter)+style.Render(body))
+			continue
+		}
+		out = append(out, style.Render(prefix+text))
 	}
 	return strings.Join(out, "\n")
 }

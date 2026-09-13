@@ -30,7 +30,7 @@ type actionMsg struct {
 type viewPosition struct{ scroll, hunk int }
 
 func (m *Model) act(action Action) tea.Cmd {
-	if m.busy || m.loading || m.err != "" {
+	if m.busy || m.loading || m.opening || m.err != "" {
 		return nil
 	}
 	files := m.files()
@@ -83,7 +83,7 @@ func (m *Model) act(action Action) tea.Cmd {
 	position := viewPosition{m.scroll.Offset(), m.hunk}
 	repo := m.repo
 	ctx, cancel := context.WithTimeout(m.ctx, 30*time.Second)
-	return func() tea.Msg {
+	return tea.Batch(func() tea.Msg {
 		defer cancel()
 		var err error
 		switch action {
@@ -102,7 +102,7 @@ func (m *Model) act(action Action) tea.Cmd {
 		defer refreshCancel()
 		s, scanErr := repo.RepositoryStatus(refreshCtx)
 		return actionMsg{s, err, scanErr, file.Path, preferred, notice, position}
-	}
+	}, pulse())
 }
 
 func (m *Model) selectPath(path string, preferred int) {
@@ -142,5 +142,5 @@ func (m *Model) moveHunk(delta int) {
 	m.hunk = min(len(m.diff.Hunks)-1, max(0, m.hunk+delta))
 	m.scroll.ScrollToTop()
 	m.scroll.ScrollDown(m.diff.Hunks[m.hunk].PatchLine)
-	m.scroll.ClampTo(len(m.lines), max(1, m.height-5))
+	m.scroll.ClampTo(len(m.lines), m.diffViewportHeight())
 }

@@ -6,8 +6,27 @@ A calm, keyboard-first terminal Git client built with TideUI.
 ![The History screen: ref filters, the commit graph with each branch in its own
 colour, and a commit's patch in the inspector](images/screen1.png)
 
-Requires Git 2.32 or newer (for `git stash show --include-untracked`) and Go
-1.26.1 or newer.
+## Install
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/allisonhere/tidegit/main/install.sh | sh
+```
+
+Installs the latest release to `~/.local/bin` — no `sudo`, so make sure that
+directory is on your `PATH`. To install system-wide instead:
+
+```sh
+INSTALL_DIR=/usr/local/bin curl -fsSL https://raw.githubusercontent.com/allisonhere/tidegit/main/install.sh | sh
+```
+
+The installer picks the Linux or macOS archive for your architecture, verifies
+it against the release's `checksums.txt`, and leaves an existing copy untouched
+if anything fails along the way. Requires Git 2.32 or newer (for
+`git stash show --include-untracked`).
+
+### From source
+
+Needs Go 1.26.1 or newer:
 
 ```sh
 go run ./cmd/tidegit /path/to/repository
